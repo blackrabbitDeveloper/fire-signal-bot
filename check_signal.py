@@ -59,3 +59,21 @@ def fetch_price_data(ticker: str = "QQQ", days: int = 300) -> list[float]:
                 time.sleep(RETRY_DELAY)
 
     raise Exception(f"Yahoo Finance API 요청 실패 — 3회 재시도 후 실패: {last_error}")
+
+
+def calculate_sma(prices: list[float], period: int = 200) -> float:
+    """Calculate Simple Moving Average for the given period."""
+    if len(prices) < period:
+        raise ValueError(f"가격 데이터 부족: {len(prices)}일 (최소 {period}일 필요, 200일 SMA 계산 불가)")
+    recent = prices[-period:]
+    return round(sum(recent) / period, 2)
+
+
+def determine_signal(price: float, sma: float) -> str:
+    """Determine RISK_ON or RISK_OFF signal."""
+    return "RISK_ON" if price > sma else "RISK_OFF"
+
+
+def calculate_diff_pct(price: float, sma: float) -> float:
+    """Calculate divergence percentage between price and SMA."""
+    return round((price - sma) / sma * 100, 2)
