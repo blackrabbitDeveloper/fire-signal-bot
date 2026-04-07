@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 import os
 import tempfile
 import pytest
@@ -217,3 +218,106 @@ def test_send_discord_notification():
     call_args = mock_urlopen.call_args[0][0]
     body = json.loads(call_args.data.decode("utf-8"))
     assert body["embeds"][0]["title"] == "test"
+
+
+def test_main_first_run_saves_state_no_notification(tmp_path):
+    """최초 실행: state.json signal=null → 상태 저장만, 알림 미전송."""
+    from check_signal import main
+    state_path = str(tmp_path / "state.json")
+    json.dump({"signal": None, "last_check": None, "last_price": None,
+               "last_sma": None, "diff_pct": None, "last_change": None},
+              open(state_path, "w"))
+
+    closes = [450.0] * 199 + [480.0]  # 200개, SMA≈450.15, 종가=480.0
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = _make_yahoo_response(closes)
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("check_signal.urlopen", return_value=mock_resp), \
+         patch("check_signal.send_discord_notification") as mock_notify, \
+         patch("check_signal.STATE_FILE", state_path):
+        result = main()
+
+    mock_notify.assert_not_called()
+    with open(state_path) as f:
+        saved = json.load(f)
+    assert saved["signal"] == "RISK_ON"
+
+
+def test_main_signal_change_sends_notification(tmp_path):
+    """시그널 변경: RISK_ON → RISK_OFF → 알림 전송."""
+    from check_signal import main
+    state_path = str(tmp_path / "state.json")
+    json.dump({"signal": "RISK_ON", "last_check": "2025-04-06", "last_price": 480.0,
+               "last_sma": 455.0, "diff_pct": 5.49, "last_change": "2025-03-15"},
+              open(state_path, "w"))
+
+    # SMA will be 450.15, close=420 → RISK_OFF
+    closes = [450.0] * 199 + [420.0]
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = _make_yahoo_response(closes)
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("check_signal.urlopen", return_value=mock_resp), \
+         patch("check_signal.send_discord_notification") as mock_notify, \
+         patch("check_signal.STATE_FILE", state_path), \
+         patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/test/test"}):
+        result = main()
+
+    mock_notify.assert_called_once()
+    embed = mock_notify.call_args[0][1]
+    assert "RISK-OFF" in embed["title"]
+
+
+def test_main_no_change_no_notification(tmp_path):
+    """시그널 유지: 알림 미전송."""
+    from check_signal import main
+    state_path = str(tmp_path / "state.json")
+    json.dump({"signal": "RISK_ON", "last_check": "2025-04-06", "last_price": 480.0,
+               "last_sma": 455.0, "diff_pct": 5.49, "last_change": "2025-03-15"},
+              open(state_path, "w"))
+
+    closes = [450.0] * 199 + [480.0]  # still RISK_ON
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = _make_yahoo_response(closes)
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("check_signal.urlopen", return_value=mock_resp), \
+         patch("check_signal.send_discord_notification") as mock_notify, \
+         patch("check_signal.STATE_FILE", state_path), \
+         patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/test/test"}):
+        result = main()
+
+    mock_notify.assert_not_called()
+
+
+def test_main_monthly_report_on_first_of_month(tmp_path):
+    """매월 1일: 시그널 변경 없어도 월간 리포트 전송."""
+    from check_signal import main
+    state_path = str(tmp_path / "state.json")
+    json.dump({"signal": "RISK_ON", "last_check": "2025-03-31", "last_price": 480.0,
+               "last_sma": 455.0, "diff_pct": 5.49, "last_change": "2025-03-15"},
+              open(state_path, "w"))
+
+    closes = [450.0] * 199 + [480.0]
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = _make_yahoo_response(closes)
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    fake_now = datetime(2025, 4, 1, 22, 0, 0)
+    with patch("check_signal.urlopen", return_value=mock_resp), \
+         patch("check_signal.send_discord_notification") as mock_notify, \
+         patch("check_signal.STATE_FILE", state_path), \
+         patch("check_signal.datetime") as mock_dt, \
+         patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/test/test"}):
+        mock_dt.now.return_value = fake_now
+        mock_dt.strptime = datetime.strptime
+        result = main()
+
+    mock_notify.assert_called_once()
+    embed = mock_notify.call_args[0][1]
+    assert "월간" in embed["title"]

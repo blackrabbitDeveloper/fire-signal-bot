@@ -184,3 +184,77 @@ def send_discord_notification(webhook_url: str, embed: dict) -> None:
     )
     with urlopen(req) as resp:
         pass  # 204 No Content = success
+
+
+def main() -> dict:
+    """Main orchestration: fetch data, check signal, notify if changed, save state."""
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    today = datetime.now()
+    today_str = today.strftime("%Y-%m-%d")
+
+    # 1. Load previous state
+    state = load_state(STATE_FILE)
+    prev_signal = state["signal"]
+
+    # 2. Fetch price data and calculate
+    try:
+        prices = fetch_price_data("QQQ", days=300)
+        sma = calculate_sma(prices, period=200)
+        current_price = round(prices[-1], 2)
+        diff_pct = calculate_diff_pct(current_price, sma)
+        new_signal = determine_signal(current_price, sma)
+    except Exception as e:
+        print(f"ERROR: {e}")
+        if webhook_url:
+            send_discord_notification(webhook_url, build_error_embed(str(e)))
+        raise
+
+    # 3. Determine if signal changed
+    changed = prev_signal is not None and new_signal != prev_signal
+
+    # 4. Send notification if changed
+    if changed and webhook_url:
+        embed = build_signal_change_embed(new_signal, current_price, sma, diff_pct)
+        send_discord_notification(webhook_url, embed)
+        print(f"SIGNAL CHANGED: {prev_signal} → {new_signal}")
+    elif not changed and prev_signal is not None:
+        print(f"No change: {new_signal} (price={current_price}, sma={sma}, diff={diff_pct}%)")
+        # Monthly report on 1st of month
+        if today.day == 1 and webhook_url:
+            embed = build_monthly_report_embed(
+                new_signal, current_price, sma, diff_pct,
+                state.get("last_change"), today_str
+            )
+            send_discord_notification(webhook_url, embed)
+            print("Monthly report sent.")
+    else:
+        print(f"First run: {new_signal} (price={current_price}, sma={sma})")
+
+    # 5. Update state
+    last_change = state.get("last_change")
+    if changed:
+        last_change = today_str
+    elif prev_signal is None:
+        last_change = None
+
+    new_state = {
+        "signal": new_signal,
+        "last_check": today_str,
+        "last_price": current_price,
+        "last_sma": sma,
+        "diff_pct": diff_pct,
+        "last_change": last_change,
+    }
+    save_state(STATE_FILE, new_state)
+
+    # 6. Set GitHub Actions outputs
+    print(f"::set-output name=signal::{new_signal}")
+    print(f"::set-output name=changed::{'true' if changed else 'false'}")
+    print(f"::set-output name=price::{current_price}")
+    print(f"::set-output name=sma::{sma}")
+
+    return new_state
+
+
+if __name__ == "__main__":
+    main()
