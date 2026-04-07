@@ -156,3 +156,64 @@ def test_determine_signal_diff_pct():
     from check_signal import calculate_diff_pct
     result = calculate_diff_pct(price=480.25, sma=455.30)
     assert result == 5.48  # (480.25 - 455.30) / 455.30 * 100 = 5.479...
+
+
+def test_build_signal_change_embed_risk_on():
+    from check_signal import build_signal_change_embed
+    embed = build_signal_change_embed(
+        signal="RISK_ON", price=480.25, sma=455.30, diff_pct=5.48
+    )
+    assert embed["title"] == "🟢 RISK-ON 전환!"
+    assert embed["color"] == 3066993
+    field_names = [f["name"] for f in embed["fields"]]
+    assert "QQQ 종가" in field_names
+    assert "200일 SMA" in field_names
+    assert "Phase 1 (LTF 성장전략)" in field_names
+    assert "Phase 2 (배당추세 안정전략)" in field_names
+
+
+def test_build_signal_change_embed_risk_off():
+    from check_signal import build_signal_change_embed
+    embed = build_signal_change_embed(
+        signal="RISK_OFF", price=420.10, sma=455.30, diff_pct=-7.73
+    )
+    assert embed["title"] == "🔴 RISK-OFF 전환!"
+    assert embed["color"] == 15158332
+    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    assert fields["Phase 1 (LTF 성장전략)"] == "GLD 50% + BIL 50%"
+    assert fields["Phase 2 (배당추세 안정전략)"] == "GLD 50% + BIL 50%"
+
+
+def test_build_monthly_report_embed():
+    from check_signal import build_monthly_report_embed
+    embed = build_monthly_report_embed(
+        signal="RISK_ON", price=480.25, sma=455.30,
+        diff_pct=5.48, last_change="2025-03-15", check_date="2025-04-01"
+    )
+    assert embed["title"] == "📊 월간 FIRE 시그널 리포트"
+    assert embed["color"] == 3447003
+    field_names = [f["name"] for f in embed["fields"]]
+    assert "현재 시그널" in field_names
+    assert "시그널 유지" in field_names
+
+
+def test_build_error_embed():
+    from check_signal import build_error_embed
+    embed = build_error_embed("HTTP 503 Service Unavailable")
+    assert embed["title"] == "⚠️ 시그널 체크 실패"
+    assert embed["color"] == 16776960
+
+
+def test_send_discord_notification():
+    from check_signal import send_discord_notification
+    embed = {"title": "test", "color": 0}
+    mock_response = MagicMock()
+    mock_response.status = 204
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("check_signal.urlopen", return_value=mock_response) as mock_urlopen:
+        send_discord_notification("https://discord.com/api/webhooks/test/test", embed)
+    call_args = mock_urlopen.call_args[0][0]
+    body = json.loads(call_args.data.decode("utf-8"))
+    assert body["embeds"][0]["title"] == "test"

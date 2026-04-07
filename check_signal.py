@@ -3,6 +3,7 @@
 import json
 import os
 import time
+from datetime import datetime, timezone
 from urllib.request import urlopen, Request
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
@@ -77,3 +78,109 @@ def determine_signal(price: float, sma: float) -> str:
 def calculate_diff_pct(price: float, sma: float) -> float:
     """Calculate divergence percentage between price and SMA."""
     return round((price - sma) / sma * 100, 2)
+
+
+PORTFOLIO = {
+    "RISK_ON": {
+        "phase1": "TQQQ 25% + QQQ 55% + GLD 20%",
+        "phase2": "SCHD 100%",
+    },
+    "RISK_OFF": {
+        "phase1": "GLD 50% + BIL 50%",
+        "phase2": "GLD 50% + BIL 50%",
+    },
+}
+
+COLORS = {
+    "RISK_ON": 3066993,    # green
+    "RISK_OFF": 15158332,  # red
+    "REPORT": 3447003,     # blue
+    "ERROR": 16776960,     # yellow
+}
+
+
+def build_signal_change_embed(signal: str, price: float, sma: float, diff_pct: float) -> dict:
+    """Build Discord embed for signal change notification."""
+    is_on = signal == "RISK_ON"
+    emoji = "🟢" if is_on else "🔴"
+    label = "RISK-ON" if is_on else "RISK-OFF"
+    direction = "상향 돌파" if is_on else "하향 이탈"
+    sign = "+" if diff_pct >= 0 else ""
+
+    return {
+        "title": f"{emoji} {label} 전환!",
+        "description": f"QQQ가 200일 이동평균선을 {direction}했습니다.\n**포트폴리오 조정이 필요합니다.**",
+        "color": COLORS[signal],
+        "fields": [
+            {"name": "QQQ 종가", "value": f"${price:,.2f}", "inline": True},
+            {"name": "200일 SMA", "value": f"${sma:,.2f}", "inline": True},
+            {"name": "이격도", "value": f"{sign}{diff_pct}%", "inline": True},
+            {"name": "Phase 1 (LTF 성장전략)", "value": PORTFOLIO[signal]["phase1"], "inline": False},
+            {"name": "Phase 2 (배당추세 안정전략)", "value": PORTFOLIO[signal]["phase2"], "inline": False},
+        ],
+        "footer": {"text": "FIRE Signal Bot"},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def build_monthly_report_embed(
+    signal: str, price: float, sma: float,
+    diff_pct: float, last_change: str | None, check_date: str
+) -> dict:
+    """Build Discord embed for monthly status report."""
+    is_on = signal == "RISK_ON"
+    emoji = "🟢" if is_on else "🔴"
+    label = "RISK-ON" if is_on else "RISK-OFF"
+    sign = "+" if diff_pct >= 0 else ""
+
+    if last_change:
+        days_held = (datetime.strptime(check_date, "%Y-%m-%d") -
+                     datetime.strptime(last_change, "%Y-%m-%d")).days
+        held_text = f"{days_held}일째"
+    else:
+        held_text = "N/A"
+
+    year_month = check_date[:7].replace("-", "년 ") + "월"
+
+    return {
+        "title": "📊 월간 FIRE 시그널 리포트",
+        "description": f"{year_month} 정기 리포트",
+        "color": COLORS["REPORT"],
+        "fields": [
+            {"name": "현재 시그널", "value": f"{emoji} {label}", "inline": True},
+            {"name": "시그널 유지", "value": held_text, "inline": True},
+            {"name": "마지막 전환", "value": last_change or "N/A", "inline": True},
+            {"name": "QQQ", "value": f"${price:,.2f}", "inline": True},
+            {"name": "200일 SMA", "value": f"${sma:,.2f}", "inline": True},
+            {"name": "이격도", "value": f"{sign}{diff_pct}%", "inline": True},
+            {"name": "이번 달 액션", "value": "없음 (시그널 유지 중)", "inline": False},
+        ],
+        "footer": {"text": "FIRE Signal Bot • 매월 1일 자동 발송"},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def build_error_embed(error_message: str) -> dict:
+    """Build Discord embed for error notification."""
+    return {
+        "title": "⚠️ 시그널 체크 실패",
+        "description": "Yahoo Finance API 요청에 실패했습니다. 수동으로 확인이 필요합니다.",
+        "color": COLORS["ERROR"],
+        "fields": [
+            {"name": "에러 내용", "value": str(error_message), "inline": False},
+            {"name": "재시도", "value": "3회 시도 후 실패", "inline": True},
+        ],
+        "footer": {"text": "FIRE Signal Bot"},
+    }
+
+
+def send_discord_notification(webhook_url: str, embed: dict) -> None:
+    """Send an embed to Discord via webhook."""
+    payload = json.dumps({"embeds": [embed]}).encode("utf-8")
+    req = Request(
+        webhook_url,
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+    )
+    with urlopen(req) as resp:
+        pass  # 204 No Content = success
