@@ -1,0 +1,47 @@
+name: FIRE Signal Check
+
+on:
+  schedule:
+    # 매일 평일(월~금) UTC 22:00 (KST 07:00)
+    - cron: '0 22 * * 1-5'
+  workflow_dispatch:  # 수동 실행 지원
+
+permissions:
+  contents: write
+
+jobs:
+  check-signal:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run signal check
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python check_signal.py
+
+      - name: Commit state changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            SIGNAL=$(python -c "import json; print(json.load(open('state.json'))['signal'])")
+            DATE=$(python -c "import json; print(json.load(open('state.json'))['last_check'])")
+            PREV=$(git show HEAD:state.json 2>/dev/null | python -c "import json,sys; d=json.load(sys.stdin); print(d.get('signal',''))" 2>/dev/null || echo "")
+            if [ "$SIGNAL" != "$PREV" ] && [ -n "$PREV" ] && [ "$PREV" != "null" ]; then
+              git commit -m "Signal: ${SIGNAL} (${DATE})"
+            else
+              git commit -m "Check: ${SIGNAL}, no change (${DATE})"
+            fi
+            git push
+          fi
