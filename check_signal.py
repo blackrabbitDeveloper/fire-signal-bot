@@ -2,6 +2,8 @@
 
 import json
 import os
+import time
+from urllib.request import urlopen, Request
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
 
@@ -28,3 +30,32 @@ def save_state(path: str, state: dict) -> None:
     """Save signal state to JSON file."""
     with open(path, "w") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
+
+
+YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+MAX_RETRIES = 3
+RETRY_DELAY = 5  # seconds
+
+
+def fetch_price_data(ticker: str = "QQQ", days: int = 300) -> list[float]:
+    """Fetch adjusted close prices from Yahoo Finance. Retries up to 3 times."""
+    now = int(time.time())
+    period1 = now - days * 86400
+    url = f"{YAHOO_URL.format(ticker=ticker)}?period1={period1}&period2={now}&interval=1d"
+    headers = {"User-Agent": USER_AGENT}
+
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            req = Request(url, headers=headers)
+            with urlopen(req) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            closes = data["chart"]["result"][0]["indicators"]["adjclose"][0]["adjclose"]
+            return [c for c in closes if c is not None]
+        except Exception as e:
+            last_error = e
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_DELAY)
+
+    raise Exception(f"Yahoo Finance API 요청 실패 — 3회 재시도 후 실패: {last_error}")

@@ -59,3 +59,55 @@ def test_save_state_writes_json():
         assert saved["diff_pct"] == -7.7
     finally:
         os.unlink(path)
+
+
+from unittest.mock import patch, MagicMock
+import json as json_mod
+
+
+def _make_yahoo_response(closes: list[float]) -> bytes:
+    """Helper: Yahoo Finance API 응답 JSON을 생성한다."""
+    data = {
+        "chart": {
+            "result": [{
+                "indicators": {
+                    "adjclose": [{"adjclose": closes}]
+                }
+            }],
+            "error": None
+        }
+    }
+    return json_mod.dumps(data).encode("utf-8")
+
+
+def test_fetch_price_data_parses_closes():
+    from check_signal import fetch_price_data
+    closes = [100.0 + i for i in range(250)]
+    mock_response = MagicMock()
+    mock_response.read.return_value = _make_yahoo_response(closes)
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("check_signal.urlopen", return_value=mock_response):
+        result = fetch_price_data("QQQ", days=300)
+    assert result == closes
+
+
+def test_fetch_price_data_retries_on_failure():
+    from check_signal import fetch_price_data
+    closes = [100.0] * 250
+    mock_ok = MagicMock()
+    mock_ok.read.return_value = _make_yahoo_response(closes)
+    mock_ok.__enter__ = lambda s: s
+    mock_ok.__exit__ = MagicMock(return_value=False)
+
+    with patch("check_signal.urlopen", side_effect=[Exception("fail"), Exception("fail"), mock_ok]):
+        result = fetch_price_data("QQQ", days=300)
+    assert len(result) == 250
+
+
+def test_fetch_price_data_raises_after_max_retries():
+    from check_signal import fetch_price_data
+    with patch("check_signal.urlopen", side_effect=Exception("HTTP 503")):
+        with pytest.raises(Exception, match="3회 재시도 후 실패"):
+            fetch_price_data("QQQ", days=300)
