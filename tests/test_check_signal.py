@@ -101,13 +101,15 @@ def test_fetch_price_data_retries_on_failure():
     mock_ok.__enter__ = lambda s: s
     mock_ok.__exit__ = MagicMock(return_value=False)
 
-    with patch("check_signal.urlopen", side_effect=[Exception("fail"), Exception("fail"), mock_ok]):
+    with patch("check_signal.urlopen", side_effect=[Exception("fail"), Exception("fail"), mock_ok]), \
+         patch("check_signal.time.sleep"):
         result = fetch_price_data("QQQ", days=300)
     assert len(result) == 250
 
 
 def test_fetch_price_data_raises_after_max_retries():
     from check_signal import fetch_price_data
-    with patch("check_signal.urlopen", side_effect=Exception("HTTP 503")):
+    with patch("check_signal.urlopen", side_effect=Exception("HTTP 503")), \
+         patch("check_signal.time.sleep"):
         with pytest.raises(Exception, match="3회 재시도 후 실패"):
             fetch_price_data("QQQ", days=300)
