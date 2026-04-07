@@ -212,21 +212,19 @@ def main() -> dict:
     # 3. Determine if signal changed
     changed = prev_signal is not None and new_signal != prev_signal
 
-    # 4. Send notification if changed
+    # 4. Send notification
     if changed and webhook_url:
         embed = build_signal_change_embed(new_signal, current_price, sma, diff_pct)
         send_discord_notification(webhook_url, embed)
         print(f"SIGNAL CHANGED: {prev_signal} → {new_signal}")
-    elif not changed and prev_signal is not None:
-        print(f"No change: {new_signal} (price={current_price}, sma={sma}, diff={diff_pct}%)")
-        # Monthly report on 1st of month
-        if today.day == 1 and webhook_url:
-            embed = build_monthly_report_embed(
-                new_signal, current_price, sma, diff_pct,
-                state.get("last_change"), today_str
-            )
-            send_discord_notification(webhook_url, embed)
-            print("Monthly report sent.")
+    elif prev_signal is not None and webhook_url:
+        # 시그널 유지 — 월간 리포트 전송
+        embed = build_monthly_report_embed(
+            new_signal, current_price, sma, diff_pct,
+            state.get("last_change"), today_str
+        )
+        send_discord_notification(webhook_url, embed)
+        print(f"Monthly report sent: {new_signal} (price={current_price}, sma={sma}, diff={diff_pct}%)")
     else:
         print(f"First run: {new_signal} (price={current_price}, sma={sma})")
 

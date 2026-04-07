@@ -271,8 +271,8 @@ def test_main_signal_change_sends_notification(tmp_path):
     assert "RISK-OFF" in embed["title"]
 
 
-def test_main_no_change_no_notification(tmp_path):
-    """시그널 유지: 알림 미전송."""
+def test_main_no_change_sends_monthly_report(tmp_path):
+    """시그널 유지: 월간 리포트 전송."""
     from check_signal import main
     state_path = str(tmp_path / "state.json")
     json.dump({"signal": "RISK_ON", "last_check": "2025-04-06", "last_price": 480.0,
@@ -291,7 +291,9 @@ def test_main_no_change_no_notification(tmp_path):
          patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/test/test"}):
         result = main()
 
-    mock_notify.assert_not_called()
+    mock_notify.assert_called_once()
+    embed = mock_notify.call_args[0][1]
+    assert "월간" in embed["title"]
 
 
 def test_main_monthly_report_on_first_of_month(tmp_path):
