@@ -2,12 +2,15 @@ name: FIRE Signal Check
 
 on:
   schedule:
-    # 매일 평일(월~금) UTC 22:00 (KST 07:00)
-    - cron: '0 22 * * 1-5'
+    # 매월 1일 UTC 22:00 (KST 07:00)
+    - cron: '0 22 1 * *'
   workflow_dispatch:  # 수동 실행 지원
 
 permissions:
   contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   check-signal:
@@ -15,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
         uses: actions/setup-python@v5
