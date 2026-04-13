@@ -1,8 +1,8 @@
 {
-  "signal": "RISK_OFF",
-  "last_check": "2026-04-07",
-  "last_price": 588.5,
-  "last_sma": 593.83,
-  "diff_pct": -0.9,
-  "last_change": "2026-04-07"
+  "signal": "RISK_ON",
+  "last_check": "2026-04-13",
+  "last_price": 611.07,
+  "last_sma": 595.32,
+  "diff_pct": 2.65,
+  "last_change": "2026-04-13"
 }
