@@ -169,7 +169,8 @@ def test_build_signal_change_embed_risk_on():
     field_names = [f["name"] for f in embed["fields"]]
     assert "QQQ 종가" in field_names
     assert "200일 SMA" in field_names
-    assert "Phase 1 (LTF 성장전략)" in field_names
+    assert "F1 (보수적)" in field_names
+    assert "F2 (공격적)" in field_names
     assert "Phase 2 (배당추세 안정전략)" in field_names
 
 
@@ -181,7 +182,8 @@ def test_build_signal_change_embed_risk_off():
     assert embed["title"] == "🔴 RISK-OFF 전환!"
     assert embed["color"] == 15158332
     fields = {f["name"]: f["value"] for f in embed["fields"]}
-    assert fields["Phase 1 (LTF 성장전략)"] == "GLD 50% + BIL 50%"
+    assert fields["F1 (보수적)"] == "DBMF 30% + XLU 15% + GLD 55%"
+    assert fields["F2 (공격적)"] == "DBMF 45% + GLD 55%"
     assert fields["Phase 2 (배당추세 안정전략)"] == "GLD 50% + BIL 50%"
 
 
@@ -191,7 +193,7 @@ def test_build_monthly_report_embed():
         signal="RISK_ON", price=480.25, sma=455.30,
         diff_pct=5.48, last_change="2025-03-15", check_date="2025-04-01"
     )
-    assert embed["title"] == "📊 월간 FIRE 시그널 리포트"
+    assert embed["title"] == "📊 월간 F전략 시그널 리포트"
     assert embed["color"] == 3447003
     field_names = [f["name"] for f in embed["fields"]]
     assert "현재 시그널" in field_names

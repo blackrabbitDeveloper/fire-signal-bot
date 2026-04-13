@@ -1,4 +1,4 @@
-"""FIRE Signal Bot — QQQ 200-day SMA crossover detector."""
+"""FIRE Signal Bot — F전략: QQQ 200-day SMA crossover with Managed Futures."""
 
 import json
 import os
@@ -82,11 +82,13 @@ def calculate_diff_pct(price: float, sma: float) -> float:
 
 PORTFOLIO = {
     "RISK_ON": {
-        "phase1": "TQQQ 25% + QQQ 55% + GLD 20%",
+        "f1": "TQQQ 30% + XLU 15% + GLD 55%",
+        "f2": "TQQQ 30% + XLU 15% + GLD 55%",
         "phase2": "SCHD 100%",
     },
     "RISK_OFF": {
-        "phase1": "GLD 50% + BIL 50%",
+        "f1": "DBMF 30% + XLU 15% + GLD 55%",
+        "f2": "DBMF 45% + GLD 55%",
         "phase2": "GLD 50% + BIL 50%",
     },
 }
@@ -115,10 +117,11 @@ def build_signal_change_embed(signal: str, price: float, sma: float, diff_pct: f
             {"name": "QQQ 종가", "value": f"${price:,.2f}", "inline": True},
             {"name": "200일 SMA", "value": f"${sma:,.2f}", "inline": True},
             {"name": "이격도", "value": f"{sign}{diff_pct}%", "inline": True},
-            {"name": "Phase 1 (LTF 성장전략)", "value": PORTFOLIO[signal]["phase1"], "inline": False},
+            {"name": "F1 (보수적)", "value": PORTFOLIO[signal]["f1"], "inline": False},
+            {"name": "F2 (공격적)", "value": PORTFOLIO[signal]["f2"], "inline": False},
             {"name": "Phase 2 (배당추세 안정전략)", "value": PORTFOLIO[signal]["phase2"], "inline": False},
         ],
-        "footer": {"text": "FIRE Signal Bot"},
+        "footer": {"text": "FIRE Signal Bot • F전략 (Off=MF)"},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -143,7 +146,7 @@ def build_monthly_report_embed(
     year_month = check_date[:7].replace("-", "년 ") + "월"
 
     return {
-        "title": "📊 월간 FIRE 시그널 리포트",
+        "title": "📊 월간 F전략 시그널 리포트",
         "description": f"{year_month} 정기 리포트",
         "color": COLORS["REPORT"],
         "fields": [
@@ -153,9 +156,10 @@ def build_monthly_report_embed(
             {"name": "QQQ", "value": f"${price:,.2f}", "inline": True},
             {"name": "200일 SMA", "value": f"${sma:,.2f}", "inline": True},
             {"name": "이격도", "value": f"{sign}{diff_pct}%", "inline": True},
-            {"name": "이번 달 액션", "value": "없음 (시그널 유지 중)", "inline": False},
+            {"name": "현재 포트폴리오", "value": f"F1: {PORTFOLIO[signal]['f1']}\nF2: {PORTFOLIO[signal]['f2']}", "inline": False},
+            {"name": "Phase 2 (배당추세 안정전략)", "value": PORTFOLIO[signal]["phase2"], "inline": False},
         ],
-        "footer": {"text": "FIRE Signal Bot • 매월 1일 자동 발송"},
+        "footer": {"text": "FIRE Signal Bot • F전략 (Off=MF) • 매월 1일 자동 발송"},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
