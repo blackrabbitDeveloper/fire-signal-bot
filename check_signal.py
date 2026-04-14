@@ -180,7 +180,11 @@ def build_error_embed(error_message: str) -> dict:
 
 def send_discord_notification(webhook_url: str, embed: dict) -> None:
     """Send an embed to Discord via webhook."""
-    payload = json.dumps({"embeds": [embed]}).encode("utf-8")
+    payload = json.dumps({
+        "embeds": [embed],
+        "username": "F2 전략봇",
+        "avatar_url": "https://em-content.zobj.net/source/twitter/376/chart-increasing_1f4c8.png",
+    }).encode("utf-8")
     req = Request(
         webhook_url,
         data=payload,
