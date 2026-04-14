@@ -84,7 +84,7 @@ PORTFOLIO = {
     "RISK_ON": {
         "f1": "TQQQ 30% + XLU 15% + GLD 55%",
         "f2": "TQQQ 30% + XLU 15% + GLD 55%",
-        "phase2": "SCHD 100%",
+        "phase2": "SCHD 50% + DIVO 50%",
     },
     "RISK_OFF": {
         "f1": "DBMF 30% + XLU 15% + GLD 55%",
@@ -182,7 +182,7 @@ def send_discord_notification(webhook_url: str, embed: dict) -> None:
     """Send an embed to Discord via webhook."""
     payload = json.dumps({
         "embeds": [embed],
-        "username": "F2 전략봇",
+        "username": "F 전략봇",
         "avatar_url": "https://em-content.zobj.net/source/twitter/376/chart-increasing_1f4c8.png",
     }).encode("utf-8")
     req = Request(
