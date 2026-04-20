@@ -325,3 +325,324 @@ def test_main_monthly_report_on_first_of_month(tmp_path):
     mock_notify.assert_called_once()
     embed = mock_notify.call_args[0][1]
     assert "월간" in embed["title"]
+
+
+# ============================================================
+# D3 Daily Escape Tests
+# ============================================================
+
+class TestCalculateDeviation:
+    """calculate_deviation 경계값 테스트."""
+
+    def test_deviation_minus_5_pct(self):
+        from check_signal import calculate_deviation
+        assert abs(calculate_deviation(950.0, 1000.0) - (-0.05)) < 1e-9
+
+    def test_deviation_minus_9_9_pct(self):
+        from check_signal import calculate_deviation
+        assert abs(calculate_deviation(901.0, 1000.0) - (-0.099)) < 1e-9
+
+    def test_deviation_minus_10_0_pct(self):
+        from check_signal import calculate_deviation
+        assert abs(calculate_deviation(900.0, 1000.0) - (-0.10)) < 1e-9
+
+    def test_deviation_minus_10_1_pct(self):
+        from check_signal import calculate_deviation
+        assert abs(calculate_deviation(899.0, 1000.0) - (-0.101)) < 1e-9
+
+    def test_deviation_minus_15_pct(self):
+        from check_signal import calculate_deviation
+        assert abs(calculate_deviation(850.0, 1000.0) - (-0.15)) < 1e-9
+
+
+class TestCheckDailyEscape:
+    """check_daily_escape 상태 조건 및 통합 테스트."""
+
+    def _make_state(self, signal="RISK_ON", trigger=None, daily_escape_date=None):
+        return {
+            "signal": signal,
+            "last_check": "2026-04-19",
+            "last_price": 500.0,
+            "last_sma": 550.0,
+            "diff_pct": -9.09,
+            "last_change": "2026-04-01",
+            "trigger": trigger,
+            "daily_escape_date": daily_escape_date,
+        }
+
+    def _mock_prices(self, close_price, sma_target=1000.0, n=250):
+        """Generate prices where SMA200 == sma_target exactly, with final = close_price.
+
+        Last 200 prices: 199 × fill + close_price, where
+        fill = (sma_target * 200 - close_price) / 199
+        """
+        fill = (sma_target * 200 - close_price) / 199
+        prices = [fill] * (n - 1) + [close_price]
+        return prices
+
+    def test_triggers_when_on_and_deviation_at_threshold(self, tmp_path):
+        """On 상태 + deviation == -10% → 발동."""
+        from check_signal import check_daily_escape
+        state_path = str(tmp_path / "state.json")
+        json.dump(self._make_state(), open(state_path, "w"))
+
+        closes = self._mock_prices(900.0, sma_target=1000.0)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _make_yahoo_response(closes)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("check_signal.urlopen", return_value=mock_resp), \
+             patch("check_signal.send_discord_notification") as mock_notify, \
+             patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://test"}):
+            result = check_daily_escape(state_path)
+
+        assert result["signal"] == "RISK_OFF"
+        assert result["trigger"] == "daily_escape"
+        assert result["daily_escape_date"] is not None
+        mock_notify.assert_called_once()
+
+    def test_triggers_when_deviation_below_threshold(self, tmp_path):
+        """On 상태 + deviation = -10.1% → 발동."""
+        from check_signal import check_daily_escape
+        state_path = str(tmp_path / "state.json")
+        json.dump(self._make_state(), open(state_path, "w"))
+
+        closes = self._mock_prices(899.0, sma_target=1000.0)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _make_yahoo_response(closes)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("check_signal.urlopen", return_value=mock_resp), \
+             patch("check_signal.send_discord_notification") as mock_notify, \
+             patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://test"}):
+            result = check_daily_escape(state_path)
+
+        assert result["signal"] == "RISK_OFF"
+        mock_notify.assert_called_once()
+
+    def test_no_trigger_when_deviation_above_threshold(self, tmp_path):
+        """On 상태 + deviation = -9.9% → 스킵."""
+        from check_signal import check_daily_escape
+        state_path = str(tmp_path / "state.json")
+        json.dump(self._make_state(), open(state_path, "w"))
+
+        closes = self._mock_prices(901.0, sma_target=1000.0)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _make_yahoo_response(closes)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("check_signal.urlopen", return_value=mock_resp), \
+             patch("check_signal.send_discord_notification") as mock_notify, \
+             patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://test"}):
+            result = check_daily_escape(state_path)
+
+        assert result["signal"] == "RISK_ON"
+        mock_notify.assert_not_called()
+
+    def test_no_trigger_when_deviation_minus_5_pct(self, tmp_path):
+        """On 상태 + deviation = -5% → 스킵."""
+        from check_signal import check_daily_escape
+        state_path = str(tmp_path / "state.json")
+        json.dump(self._make_state(), open(state_path, "w"))
+
+        closes = self._mock_prices(950.0, sma_target=1000.0)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _make_yahoo_response(closes)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("check_signal.urlopen", return_value=mock_resp), \
+             patch("check_signal.send_discord_notification") as mock_notify, \
+             patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://test"}):
+            result = check_daily_escape(state_path)
+
+        assert result["signal"] == "RISK_ON"
+        mock_notify.assert_not_called()
+
+    def test_skip_when_already_off(self, tmp_path):
+        """Off 상태에서 발동 안 함."""
+        from check_signal import check_daily_escape
+        state_path = str(tmp_path / "state.json")
+        json.dump(self._make_state(signal="RISK_OFF", trigger="monthly"), open(state_path, "w"))
+
+        with patch("check_signal.send_discord_notification") as mock_notify:
+            result = check_daily_escape(state_path)
+
+        assert result["signal"] == "RISK_OFF"
+        mock_notify.assert_not_called()
+
+    def test_skip_same_month_retrigger(self, tmp_path):
+        """같은 달 재발동 방지."""
+        from check_signal import check_daily_escape
+        state_path = str(tmp_path / "state.json")
+        today_ym = datetime.now().strftime("%Y-%m")
+        json.dump(
+            self._make_state(signal="RISK_ON", daily_escape_date=f"{today_ym}-05"),
+            open(state_path, "w"),
+        )
+
+        with patch("check_signal.send_discord_notification") as mock_notify:
+            result = check_daily_escape(state_path)
+
+        assert result["signal"] == "RISK_ON"
+        mock_notify.assert_not_called()
+
+    def test_allows_trigger_different_month(self, tmp_path):
+        """전달 발동 이력 있어도 다른 달이면 발동 허용."""
+        from check_signal import check_daily_escape
+        state_path = str(tmp_path / "state.json")
+        json.dump(
+            self._make_state(signal="RISK_ON", daily_escape_date="2025-01-15"),
+            open(state_path, "w"),
+        )
+
+        closes = self._mock_prices(850.0, sma_target=1000.0)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _make_yahoo_response(closes)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("check_signal.urlopen", return_value=mock_resp), \
+             patch("check_signal.send_discord_notification") as mock_notify, \
+             patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://test"}):
+            result = check_daily_escape(state_path)
+
+        assert result["signal"] == "RISK_OFF"
+        assert result["trigger"] == "daily_escape"
+        mock_notify.assert_called_once()
+
+    def test_skip_insufficient_data(self, tmp_path):
+        """SMA200 데이터 부족 (200일 미만) 시 안전 스킵."""
+        from check_signal import check_daily_escape
+        state_path = str(tmp_path / "state.json")
+        json.dump(self._make_state(), open(state_path, "w"))
+
+        closes = [500.0] * 100
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _make_yahoo_response(closes)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("check_signal.urlopen", return_value=mock_resp), \
+             patch("check_signal.send_discord_notification") as mock_notify:
+            result = check_daily_escape(state_path)
+
+        assert result["signal"] == "RISK_ON"
+        mock_notify.assert_not_called()
+
+    def test_backward_compat_no_trigger_field(self, tmp_path):
+        """state.json에 trigger 필드 없을 때 하위 호환."""
+        from check_signal import check_daily_escape
+        state_path = str(tmp_path / "state.json")
+        json.dump({
+            "signal": "RISK_ON", "last_check": "2026-04-19",
+            "last_price": 500.0, "last_sma": 550.0,
+            "diff_pct": -9.09, "last_change": "2026-04-01",
+        }, open(state_path, "w"))
+
+        closes = self._mock_prices(900.0, sma_target=1000.0)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _make_yahoo_response(closes)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("check_signal.urlopen", return_value=mock_resp), \
+             patch("check_signal.send_discord_notification") as mock_notify, \
+             patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://test"}):
+            result = check_daily_escape(state_path)
+
+        assert result["signal"] == "RISK_OFF"
+        assert result["trigger"] == "daily_escape"
+
+    def test_api_failure_sends_error_notification(self, tmp_path):
+        """Yahoo API 실패 시 에러 알림."""
+        from check_signal import check_daily_escape
+        state_path = str(tmp_path / "state.json")
+        json.dump(self._make_state(), open(state_path, "w"))
+
+        with patch("check_signal.urlopen", side_effect=Exception("HTTP 503")), \
+             patch("check_signal.time.sleep"), \
+             patch("check_signal.send_discord_notification") as mock_notify, \
+             patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://test"}):
+            with pytest.raises(Exception, match="3회 재시도 후 실패"):
+                check_daily_escape(state_path)
+
+        mock_notify.assert_called_once()
+        embed = mock_notify.call_args[0][1]
+        assert "실패" in embed["title"]
+
+
+class TestBuildDailyEscapeEmbed:
+    """긴급 탈출 embed 내용 검증."""
+
+    def test_embed_contains_portfolio_instructions(self):
+        from check_signal import build_daily_escape_embed
+        embed = build_daily_escape_embed(
+            price=900.0, sma=1000.0, deviation=-0.10, check_date="2026-04-20"
+        )
+        assert "긴급 탈출" in embed["title"]
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "TQQQ" in fields["매도"]
+        assert "XLU" in fields["매도"]
+        assert "DBMF" in fields["매수"]
+        assert "GLD" in fields["유지"]
+        assert "DBMF 45% + GLD 55%" in fields["최종 포트폴리오"]
+        assert "-10.0" in fields["이격도"]
+
+
+class TestMainTriggerField:
+    """main()의 trigger/daily_escape_date 필드 처리."""
+
+    def test_main_on_to_off_sets_monthly_trigger(self, tmp_path):
+        """월말 체크 ON→OFF 전환 시 trigger=monthly."""
+        from check_signal import main
+        state_path = str(tmp_path / "state.json")
+        json.dump({"signal": "RISK_ON", "last_check": "2026-04-06",
+                    "last_price": 480.0, "last_sma": 455.0, "diff_pct": 5.49,
+                    "last_change": "2026-03-15", "trigger": None,
+                    "daily_escape_date": None},
+                  open(state_path, "w"))
+
+        closes = [450.0] * 199 + [420.0]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _make_yahoo_response(closes)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("check_signal.urlopen", return_value=mock_resp), \
+             patch("check_signal.send_discord_notification"), \
+             patch("check_signal.STATE_FILE", state_path), \
+             patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://test"}):
+            result = main()
+
+        assert result["signal"] == "RISK_OFF"
+        assert result["trigger"] == "monthly"
+
+    def test_main_off_to_on_resets_escape_fields(self, tmp_path):
+        """월말 체크 OFF→ON 복귀 시 trigger=null, daily_escape_date=null."""
+        from check_signal import main
+        state_path = str(tmp_path / "state.json")
+        json.dump({"signal": "RISK_OFF", "last_check": "2026-04-06",
+                    "last_price": 420.0, "last_sma": 455.0, "diff_pct": -7.7,
+                    "last_change": "2026-04-06", "trigger": "daily_escape",
+                    "daily_escape_date": "2026-04-05"},
+                  open(state_path, "w"))
+
+        closes = [450.0] * 199 + [480.0]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = _make_yahoo_response(closes)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("check_signal.urlopen", return_value=mock_resp), \
+             patch("check_signal.send_discord_notification"), \
+             patch("check_signal.STATE_FILE", state_path), \
+             patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://test"}):
+            result = main()
+
+        assert result["signal"] == "RISK_ON"
+        assert result["trigger"] is None
+        assert result["daily_escape_date"] is None

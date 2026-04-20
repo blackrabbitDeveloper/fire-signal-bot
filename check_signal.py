@@ -80,6 +80,14 @@ def calculate_diff_pct(price: float, sma: float) -> float:
     return round((price - sma) / sma * 100, 2)
 
 
+DAILY_ESCAPE_THRESHOLD = -0.10  # -10% deviation triggers emergency exit
+
+
+def calculate_deviation(price: float, sma: float) -> float:
+    """Calculate (price - sma) / sma as a ratio (e.g. -0.10 = -10%)."""
+    return (price - sma) / sma
+
+
 PORTFOLIO = {
     "RISK_ON": {
         "f1": "TQQQ 30% + XLU 15% + GLD 55%",
@@ -164,6 +172,35 @@ def build_monthly_report_embed(
     }
 
 
+DAILY_ESCAPE_PORTFOLIO = "DBMF 45% + GLD 55%"
+
+
+def build_daily_escape_embed(
+    price: float, sma: float, deviation: float, check_date: str
+) -> dict:
+    """Build Discord embed for daily emergency escape notification."""
+    return {
+        "title": "🚨 긴급 탈출 (D3) 발동!",
+        "description": (
+            f"QQQ 이격도가 **{deviation*100:.1f}%** 로 -10% 임계치를 이탈했습니다.\n"
+            "**다음 거래일 시가에 포트폴리오 조정이 필요합니다.**"
+        ),
+        "color": COLORS["RISK_OFF"],
+        "fields": [
+            {"name": "QQQ 종가", "value": f"${price:,.2f}", "inline": True},
+            {"name": "200일 SMA", "value": f"${sma:,.2f}", "inline": True},
+            {"name": "이격도", "value": f"{deviation*100:.2f}%", "inline": True},
+            {"name": "매도", "value": "TQQQ 전량 + XLU 전량", "inline": False},
+            {"name": "매수", "value": "매도 대금으로 DBMF 매수", "inline": False},
+            {"name": "유지", "value": "GLD 유지", "inline": False},
+            {"name": "최종 포트폴리오", "value": DAILY_ESCAPE_PORTFOLIO, "inline": False},
+            {"name": "실행 시점", "value": "다음 거래일 시가", "inline": True},
+        ],
+        "footer": {"text": f"FIRE Signal Bot • D3 긴급 탈출 • {check_date}"},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def build_error_embed(error_message: str) -> dict:
     """Build Discord embed for error notification."""
     return {
@@ -192,6 +229,79 @@ def send_discord_notification(webhook_url: str, embed: dict) -> None:
     )
     with urlopen(req) as resp:
         pass  # 204 No Content = success
+
+
+def check_daily_escape(state_path: str = STATE_FILE, dry_run: bool = False) -> dict:
+    """Daily emergency escape check (D3).
+
+    Triggers RISK_OFF when QQQ deviation from SMA200 <= -10%,
+    only if currently RISK_ON and not already triggered this month.
+    Recovery is handled solely by the monthly SMA check.
+
+    Args:
+        dry_run: If True, skip state save and Discord notification (console output only).
+    """
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_ym = today_str[:7]  # "YYYY-MM"
+
+    # 1. Load state
+    state = load_state(state_path)
+
+    # 2. Skip if already OFF (bypass in dry-run)
+    if not dry_run and state.get("signal") != "RISK_ON":
+        print(f"{today_str}, SKIP: already {state.get('signal')}")
+        return state
+
+    # 3. Skip if already triggered this month (bypass in dry-run)
+    escape_date = state.get("daily_escape_date")
+    if not dry_run and escape_date and escape_date[:7] == today_ym:
+        print(f"{today_str}, SKIP: already triggered this month ({escape_date})")
+        return state
+
+    # 4. Fetch data and calculate
+    try:
+        prices = fetch_price_data("QQQ", days=300)
+        if len(prices) < 200:
+            print(f"{today_str}, SKIP: insufficient data ({len(prices)} days)")
+            return state
+        sma = calculate_sma(prices, period=200)
+        current_price = round(prices[-1], 2)
+        deviation = calculate_deviation(current_price, sma)
+    except Exception as e:
+        print(f"ERROR: {e}")
+        if webhook_url:
+            send_discord_notification(webhook_url, build_error_embed(str(e)))
+        raise
+
+    # 5. Check threshold
+    if deviation > DAILY_ESCAPE_THRESHOLD:
+        print(f"{today_str}, {current_price}, {sma}, {deviation:.4f}, NO_ACTION")
+        return state
+
+    # 6. Trigger emergency exit
+    action = "EMERGENCY_OFF (dry-run)" if dry_run else "EMERGENCY_OFF"
+    print(f"{today_str}, {current_price}, {sma}, {deviation:.4f}, {action}")
+
+    new_state = {
+        **state,
+        "signal": "RISK_OFF",
+        "last_check": today_str,
+        "last_price": current_price,
+        "last_sma": sma,
+        "diff_pct": round(deviation * 100, 2),
+        "last_change": today_str,
+        "trigger": "daily_escape",
+        "daily_escape_date": today_str,
+    }
+
+    if not dry_run:
+        save_state(state_path, new_state)
+        if webhook_url:
+            embed = build_daily_escape_embed(current_price, sma, deviation, today_str)
+            send_discord_notification(webhook_url, embed)
+
+    return new_state
 
 
 def main() -> dict:
@@ -238,10 +348,22 @@ def main() -> dict:
 
     # 5. Update state
     last_change = state.get("last_change")
+    trigger = state.get("trigger")
+    daily_escape_date = state.get("daily_escape_date")
+
     if changed:
         last_change = today_str
+        if new_signal == "RISK_OFF":
+            trigger = "monthly"
+            # preserve daily_escape_date for history
+        else:
+            # Recovery to ON — reset escape fields
+            trigger = None
+            daily_escape_date = None
     elif prev_signal is None:
         last_change = None
+        trigger = None
+        daily_escape_date = None
 
     new_state = {
         "signal": new_signal,
@@ -250,6 +372,8 @@ def main() -> dict:
         "last_sma": sma,
         "diff_pct": diff_pct,
         "last_change": last_change,
+        "trigger": trigger,
+        "daily_escape_date": daily_escape_date,
     }
     save_state(STATE_FILE, new_state)
 
@@ -263,4 +387,8 @@ def main() -> dict:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--daily" in sys.argv:
+        check_daily_escape(dry_run="--dry-run" in sys.argv)
+    else:
+        main()

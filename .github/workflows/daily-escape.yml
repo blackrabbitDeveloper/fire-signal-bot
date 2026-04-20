@@ -1,0 +1,50 @@
+name: Daily Escape Check (D3)
+
+on:
+  schedule:
+    # 평일 매일 UTC 21:00 (미국장 마감 후, KST 06:00)
+    - cron: '0 21 * * 1-5'
+  workflow_dispatch:  # 수동 실행 지원
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  daily-escape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run daily escape check
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python check_signal.py --daily
+
+      - name: Commit state changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            SIGNAL=$(python -c "import json; print(json.load(open('state.json'))['signal'])")
+            DATE=$(python -c "import json; print(json.load(open('state.json'))['last_check'])")
+            TRIGGER=$(python -c "import json; print(json.load(open('state.json')).get('trigger',''))")
+            if [ "$TRIGGER" = "daily_escape" ]; then
+              git commit -m "D3 Emergency: RISK_OFF (${DATE})"
+            else
+              git commit -m "D3 Check: ${SIGNAL}, no change (${DATE})"
+            fi
+            git push
+          fi
