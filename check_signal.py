@@ -3,7 +3,7 @@
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.request import urlopen, Request
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
@@ -39,8 +39,8 @@ MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds
 
 
-def fetch_price_data(ticker: str = "QQQ", days: int = 300) -> list[float]:
-    """Fetch adjusted close prices from Yahoo Finance. Retries up to 3 times."""
+def _fetch_yahoo_chart(ticker: str = "QQQ", days: int = 300) -> dict:
+    """Low-level Yahoo Finance fetch with retries. Returns raw chart result."""
     now = int(time.time())
     period1 = now - days * 86400
     url = f"{YAHOO_URL.format(ticker=ticker)}?period1={period1}&period2={now}&interval=1d"
@@ -52,14 +52,39 @@ def fetch_price_data(ticker: str = "QQQ", days: int = 300) -> list[float]:
             req = Request(url, headers=headers)
             with urlopen(req) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            closes = data["chart"]["result"][0]["indicators"]["adjclose"][0]["adjclose"]
-            return [c for c in closes if c is not None]
+            return data["chart"]["result"][0]
         except Exception as e:
             last_error = e
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_DELAY)
 
     raise Exception(f"Yahoo Finance API 요청 실패 — 3회 재시도 후 실패: {last_error}")
+
+
+def fetch_price_data(ticker: str = "QQQ", days: int = 300) -> list[float]:
+    """Fetch adjusted close prices from Yahoo Finance. Retries up to 3 times."""
+    result = _fetch_yahoo_chart(ticker, days)
+    closes = result["indicators"]["adjclose"][0]["adjclose"]
+    return [c for c in closes if c is not None]
+
+
+def fetch_price_data_with_timestamps(
+    ticker: str = "QQQ", days: int = 300
+) -> tuple[list[str], list[float]]:
+    """Fetch adjusted close prices with trading dates (YYYY-MM-DD).
+
+    Returns:
+        (dates, closes) — parallel lists of date strings and prices.
+    """
+    result = _fetch_yahoo_chart(ticker, days)
+    timestamps = result["timestamp"]
+    closes = result["indicators"]["adjclose"][0]["adjclose"]
+    paired = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
+    if not paired:
+        return [], []
+    dates = [datetime.fromtimestamp(t, tz=timezone.utc).strftime("%Y-%m-%d") for t, _ in paired]
+    prices = [c for _, c in paired]
+    return dates, prices
 
 
 def calculate_sma(prices: list[float], period: int = 200) -> float:
@@ -78,6 +103,15 @@ def determine_signal(price: float, sma: float) -> str:
 def calculate_diff_pct(price: float, sma: float) -> float:
     """Calculate divergence percentage between price and SMA."""
     return round((price - sma) / sma * 100, 2)
+
+
+def is_last_trading_day_of_month(today: datetime) -> bool:
+    """True if the next weekday (Mon-Fri) falls in a different month."""
+    d = today
+    while True:
+        d = d + timedelta(days=1)
+        if d.weekday() < 5:  # Mon=0 ... Fri=4
+            return d.month != today.month
 
 
 DAILY_ESCAPE_THRESHOLD = -0.10  # -10% deviation triggers emergency exit
@@ -231,7 +265,10 @@ def send_discord_notification(webhook_url: str, embed: dict) -> None:
         pass  # 204 No Content = success
 
 
-def check_daily_escape(state_path: str = STATE_FILE, dry_run: bool = False) -> dict:
+def check_daily_escape(
+    state_path: str = STATE_FILE, dry_run: bool = False,
+    prices: list[float] | None = None,
+) -> dict:
     """Daily emergency escape check (D3).
 
     Triggers RISK_OFF when QQQ deviation from SMA200 <= -10%,
@@ -240,6 +277,7 @@ def check_daily_escape(state_path: str = STATE_FILE, dry_run: bool = False) -> d
 
     Args:
         dry_run: If True, skip state save and Discord notification (console output only).
+        prices: Pre-fetched price data. If None, fetches from Yahoo Finance.
     """
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -261,7 +299,8 @@ def check_daily_escape(state_path: str = STATE_FILE, dry_run: bool = False) -> d
 
     # 4. Fetch data and calculate
     try:
-        prices = fetch_price_data("QQQ", days=300)
+        if prices is None:
+            prices = fetch_price_data("QQQ", days=300)
         if len(prices) < 200:
             print(f"{today_str}, SKIP: insufficient data ({len(prices)} days)")
             return state
@@ -304,8 +343,12 @@ def check_daily_escape(state_path: str = STATE_FILE, dry_run: bool = False) -> d
     return new_state
 
 
-def main() -> dict:
-    """Main orchestration: fetch data, check signal, notify if changed, save state."""
+def main(prices: list[float] | None = None) -> dict:
+    """Monthly SMA check: fetch data, check signal, notify if changed, save state.
+
+    Args:
+        prices: Pre-fetched price data. If None, fetches from Yahoo Finance.
+    """
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
     today = datetime.now()
     today_str = today.strftime("%Y-%m-%d")
@@ -316,7 +359,8 @@ def main() -> dict:
 
     # 2. Fetch price data and calculate
     try:
-        prices = fetch_price_data("QQQ", days=300)
+        if prices is None:
+            prices = fetch_price_data("QQQ", days=300)
         sma = calculate_sma(prices, period=200)
         current_price = round(prices[-1], 2)
         diff_pct = calculate_diff_pct(current_price, sma)
@@ -386,9 +430,61 @@ def main() -> dict:
     return new_state
 
 
+def run(dry_run: bool = False) -> None:
+    """Unified daily entry point: trading day check → D3 escape → monthly SMA (if month-end).
+
+    Single Yahoo Finance fetch shared across both checks.
+    """
+    today = datetime.now()
+    today_str = today.strftime("%Y-%m-%d")
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
+    # 1. Fetch data with timestamps (single API call)
+    try:
+        dates, prices = fetch_price_data_with_timestamps("QQQ", days=300)
+    except Exception as e:
+        print(f"ERROR: {e}")
+        if webhook_url:
+            send_discord_notification(webhook_url, build_error_embed(str(e)))
+        raise
+
+    if not dates:
+        print(f"{today_str}, SKIP: no data returned")
+        return
+
+    # 2. Check if first run (no state yet)
+    state = load_state(STATE_FILE)
+    first_run = state.get("signal") is None
+
+    # 3. Trading day check (bypass in dry-run and first run)
+    last_trading_date = dates[-1]
+    if not dry_run and not first_run and last_trading_date != today_str:
+        print(f"{today_str}, SKIP: market closed (last trading day: {last_trading_date})")
+        return
+
+    # 4. D3 daily escape check (skip on first run — no position to escape)
+    if not first_run:
+        print(f"--- D3 Daily Escape Check ---")
+        check_daily_escape(prices=prices, dry_run=dry_run)
+
+    # 5. Monthly SMA check: last trading day of month, first run, or dry-run
+    if first_run:
+        print(f"--- Initial Signal Setup ---")
+        main(prices=prices)
+    elif is_last_trading_day_of_month(today):
+        print(f"--- Monthly SMA Check (last trading day of month) ---")
+        main(prices=prices)
+    elif dry_run:
+        print(f"--- Monthly SMA Check (dry-run, not last trading day) ---")
+        main(prices=prices)
+    else:
+        print(f"{today_str}, Monthly check skipped (not last trading day)")
+
+
 if __name__ == "__main__":
     import sys
+    dry_run = "--dry-run" in sys.argv
     if "--daily" in sys.argv:
-        check_daily_escape(dry_run="--dry-run" in sys.argv)
+        check_daily_escape(dry_run=dry_run)
     else:
-        main()
+        run(dry_run=dry_run)
