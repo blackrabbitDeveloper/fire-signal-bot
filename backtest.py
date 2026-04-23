@@ -389,24 +389,38 @@ def save_csv(events: list[dict], filepath: str) -> None:
     print(f"CSV 저장: {filepath}")
 
 
-def build_trade_log(events: list[dict], indicators_df: pd.DataFrame) -> list[dict]:
+def _calc_portfolio_return(rets_df: pd.DataFrame, start: pd.Timestamp,
+                           end: pd.Timestamp) -> float | None:
+    """On 구간 포트폴리오(TQQQ30+XLU15+GLD55) 누적 수익률 계산."""
+    if rets_df is None:
+        return None
+    mask = (rets_df.index >= start) & (rets_df.index <= end)
+    seg = rets_df.loc[mask]
+    if len(seg) < 2:
+        return None
+    port_daily = (0.30 * seg["TQQQ"] + 0.15 * seg["XLU"] + 0.55 * seg["GLD"])
+    cum = (1 + port_daily).cumprod()
+    return round((cum.iloc[-1] - 1) * 100, 2)
+
+
+def build_trade_log(events: list[dict], indicators_df: pd.DataFrame,
+                    port_rets: pd.DataFrame | None = None) -> list[dict]:
     """이벤트를 진입/청산 페어링하여 매매 로그 생성.
 
-    On 진입 → Off 청산을 한 쌍으로 묶어 구간 수익률 계산.
+    On 진입 -> Off 청산을 한 쌍으로 묶어 구간 수익률 계산.
+    port_rets가 주어지면 실제 포트폴리오 수익률도 계산.
     """
     trades = []
     entry = None
 
     for e in events:
         if e["to"] == "On":
-            # 진입
             entry = e
         elif e["to"] == "Off" and entry is not None:
-            # 청산 -페어링
             entry_date = pd.Timestamp(entry["date"])
             exit_date = pd.Timestamp(e["date"])
 
-            # 구간 QQQ 수익률
+            # QQQ 수익률
             mask = (indicators_df.index >= entry_date) & (indicators_df.index <= exit_date)
             segment = indicators_df.loc[mask, "close"]
             if len(segment) >= 2:
@@ -416,7 +430,7 @@ def build_trade_log(events: list[dict], indicators_df: pd.DataFrame) -> list[dic
 
             holding_days = (e["date"] - entry["date"]).days
 
-            trades.append({
+            trade = {
                 "trade_no": len(trades) + 1,
                 "entry_date": entry["date"],
                 "entry_type": entry["type"],
@@ -426,20 +440,23 @@ def build_trade_log(events: list[dict], indicators_df: pd.DataFrame) -> list[dic
                 "exit_price": e["close"],
                 "holding_days": holding_days,
                 "qqq_return_pct": round(qqq_return, 2),
+                "port_return_pct": _calc_portfolio_return(port_rets, entry_date, exit_date),
                 "entry_deviation": round(entry["deviation_pct"], 2),
                 "exit_deviation": round(e["deviation_pct"], 2),
-            })
+            }
+            trades.append(trade)
             entry = None
 
-    # 미청산 포지션 (현재 On 상태)
+    # 미청산 포지션
     if entry is not None:
         entry_date = pd.Timestamp(entry["date"])
+        last_date = indicators_df.index[-1]
         segment = indicators_df.loc[indicators_df.index >= entry_date, "close"]
         if len(segment) >= 2:
             qqq_return = (segment.iloc[-1] / segment.iloc[0] - 1) * 100
         else:
             qqq_return = 0.0
-        holding_days = (indicators_df.index[-1].date() - entry["date"]).days
+        holding_days = (last_date.date() - entry["date"]).days
 
         trades.append({
             "trade_no": len(trades) + 1,
@@ -451,6 +468,7 @@ def build_trade_log(events: list[dict], indicators_df: pd.DataFrame) -> list[dic
             "exit_price": float(indicators_df["close"].iloc[-1]),
             "holding_days": holding_days,
             "qqq_return_pct": round(qqq_return, 2),
+            "port_return_pct": _calc_portfolio_return(port_rets, entry_date, last_date),
             "entry_deviation": round(entry["deviation_pct"], 2),
             "exit_deviation": None,
         })
@@ -463,42 +481,71 @@ def print_trade_log(trades: list[dict]) -> None:
     if not trades:
         return
 
-    print(f"\n{'='*80}")
-    print(f"  매매 로그 (On 진입 → Off 청산 페어링)")
-    print(f"{'='*80}\n")
+    has_port = any(t.get("port_return_pct") is not None for t in trades)
 
-    print(f"  {'#':>3}  {'진입일':10} {'진입유형':12} {'진입가':>9}  {'청산일':10} {'청산유형':12} {'청산가':>9}  {'일수':>5}  {'QQQ수익':>8}")
-    print(f"  {'─'*88}")
+    print(f"\n{'='*96}")
+    print(f"  매매 로그 (On 진입 -> Off 청산 페어링)")
+    print(f"{'='*96}\n")
 
-    wins = 0
-    losses = 0
-    total_return = 0.0
+    if has_port:
+        print(f"  {'#':>3}  {'진입일':10} {'진입유형':12} {'진입가':>9}  {'청산일':10} {'청산유형':12} {'청산가':>9}  {'일수':>5}  {'QQQ':>8} {'PORT':>8}")
+        print(f"  {'='*96}")
+    else:
+        print(f"  {'#':>3}  {'진입일':10} {'진입유형':12} {'진입가':>9}  {'청산일':10} {'청산유형':12} {'청산가':>9}  {'일수':>5}  {'QQQ':>8}")
+        print(f"  {'='*88}")
+
+    wins_q = 0
+    losses_q = 0
+    total_q = 0.0
+    wins_p = 0
+    losses_p = 0
+    total_p = 0.0
 
     for t in trades:
         exit_date = str(t["exit_date"])[:10]
         exit_type = t["exit_type"][:12]
-        ret_str = f"{t['qqq_return_pct']:+.2f}%"
+        q_str = f"{t['qqq_return_pct']:+.2f}%"
 
-        print(
+        line = (
             f"  {t['trade_no']:>3}  {str(t['entry_date']):10} {t['entry_type']:12} "
             f"${t['entry_price']:>8.2f}  {exit_date:10} {exit_type:12} "
-            f"${t['exit_price']:>8.2f}  {t['holding_days']:>5}  {ret_str:>8}"
+            f"${t['exit_price']:>8.2f}  {t['holding_days']:>5}  {q_str:>8}"
         )
 
-        if t["exit_type"] != "HOLDING":
-            total_return += t["qqq_return_pct"]
-            if t["qqq_return_pct"] >= 0:
-                wins += 1
-            else:
-                losses += 1
+        if has_port:
+            p = t.get("port_return_pct")
+            p_str = f"{p:+.2f}%" if p is not None else "   N/A"
+            line += f" {p_str:>8}"
 
-    closed = wins + losses
+        print(line)
+
+        if t["exit_type"] != "HOLDING":
+            total_q += t["qqq_return_pct"]
+            if t["qqq_return_pct"] >= 0:
+                wins_q += 1
+            else:
+                losses_q += 1
+            p = t.get("port_return_pct")
+            if p is not None:
+                total_p += p
+                if p >= 0:
+                    wins_p += 1
+                else:
+                    losses_p += 1
+
+    closed = wins_q + losses_q
     print()
     if closed > 0:
-        avg_return = total_return / closed
-        win_rate = wins / closed * 100
+        avg_q = total_q / closed
+        wr_q = wins_q / closed * 100
         avg_hold = sum(t["holding_days"] for t in trades if t["exit_type"] != "HOLDING") / closed
-        print(f"  총 {closed}건 (승 {wins} / 패 {losses}) | 승률 {win_rate:.1f}% | 평균 수익 {avg_return:+.2f}% | 평균 보유 {avg_hold:.0f}일")
+        print(f"  QQQ:  {closed}건 | 승률 {wr_q:.1f}% | 평균 {avg_q:+.2f}% | 평균 보유 {avg_hold:.0f}일")
+
+    closed_p = wins_p + losses_p
+    if closed_p > 0:
+        avg_p = total_p / closed_p
+        wr_p = wins_p / closed_p * 100
+        print(f"  PORT: {closed_p}건 | 승률 {wr_p:.1f}% | 평균 {avg_p:+.2f}%")
     print()
 
 
@@ -509,7 +556,8 @@ def save_trade_log_csv(trades: list[dict], filepath: str) -> None:
     fields = [
         "trade_no", "entry_date", "entry_type", "entry_price",
         "exit_date", "exit_type", "exit_price",
-        "holding_days", "qqq_return_pct", "entry_deviation", "exit_deviation",
+        "holding_days", "qqq_return_pct", "port_return_pct",
+        "entry_deviation", "exit_deviation",
     ]
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -698,15 +746,26 @@ def main():
 
     print_results(events, state, perf)
 
+    # 포트폴리오 종목 수익률 데이터 (매매 로그용)
+    port_rets = None
+    if args.portfolio:
+        try:
+            tickers = ["TQQQ", "XLU", "GLD", "DBMF"]
+            download_start_port = str(int(args.start[:4]) - 1) + args.start[4:]
+            port_closes = download_multi(tickers, start=download_start_port)
+            port_closes = port_closes[port_closes.index >= pd.Timestamp(args.start)]
+            port_rets = port_closes.pct_change().fillna(0)
+        except Exception as e:
+            print(f"  포트폴리오 데이터 로드 실패 (QQQ만 표시): {e}")
+
     # 매매 로그
-    trades = build_trade_log(events, indicators_df)
+    trades = build_trade_log(events, indicators_df, port_rets)
     print_trade_log(trades)
     if args.trades:
         save_trade_log_csv(trades, args.trades)
 
     # 실제 포트폴리오 백테스트
     if args.portfolio:
-        # 전체 기간 (DBMF 없는 구간은 GLD 대체)
         port_result = compute_portfolio_performance(indicators_df, daily_states, args.start)
         if port_result:
             print_portfolio_results(port_result)
