@@ -251,6 +251,8 @@ def send_action_alert(action: dict, state: dict, indicators: dict, check_date: s
         direction = "On" if action["type"] == "MONTHLY_ON" else "Off"
         embed = build_monthly_change_embed(direction, indicators, check_date)
     elif action["type"] == "DAILY_STATUS":
+        if date.today().weekday() != 4:  # 금요일(4)만 발송
+            return
         embed = build_daily_status_embed(state, indicators, check_date)
     else:
         return
