@@ -1,4 +1,4 @@
-"""H 전략 시그널 백테스트 — 가이드 10장 검증용.
+"""H 전략 시그널 백테스트 -가이드 10장 검증용.
 
 과거 QQQ 데이터로 signal_checker 로직을 날짜별 시뮬레이션하여
 D3 긴급 탈출, GCE 진입, 월말 On/Off 발동 이력을 검증한다.
@@ -90,7 +90,7 @@ def run_backtest(close: pd.Series, start_date: str = "2012-01-01") -> list[dict]
         print("ERROR: 시작일 이후 데이터 없음")
         return []
 
-    # 초기 상태 — 첫 날 SMA200 기준으로 설정
+    # 초기 상태 -첫 날 SMA200 기준으로 설정
     first_row = indicators_df.iloc[0]
     initial_state = "On" if first_row["above_sma200"] else "Off"
 
@@ -317,19 +317,19 @@ def print_results(events: list[dict], state: dict, perf: dict | None = None) -> 
     d3_years = sorted(set(e["date"].year for e in emergency))
     guide_d3_years = [2018, 2020, 2022]
 
-    print(f"  {'D3 긴급 탈출':<20} {'3회':<12} {f'{len(emergency)}회':<12} {'✓' if len(emergency) == 3 else '✗'}")
-    print(f"  {'D3 발동 연도':<20} {str(guide_d3_years):<12} {str(d3_years):<12} {'✓' if d3_years == guide_d3_years else '△'}")
-    print(f"  {'GCE 진입':<20} {'4회':<12} {f'{len(gce)}회':<12} {'✓' if len(gce) == 4 else '△'}")
-    print(f"  {'월말 On/Off':<20} {'~33회':<12} {f'{len(monthly_off)+len(monthly_on)}회':<12} {'✓' if abs(len(monthly_off)+len(monthly_on) - 33) <= 5 else '△'}")
+    print(f"  {'D3 긴급 탈출':<20} {'3회':<12} {f'{len(emergency)}회':<12} {'O' if len(emergency) == 3 else 'X'}")
+    print(f"  {'D3 발동 연도':<20} {str(guide_d3_years):<12} {str(d3_years):<12} {'O' if d3_years == guide_d3_years else '~'}")
+    print(f"  {'GCE 진입':<20} {'4회':<12} {f'{len(gce)}회':<12} {'O' if len(gce) == 4 else '~'}")
+    print(f"  {'월말 On/Off':<20} {'~33회':<12} {f'{len(monthly_off)+len(monthly_on)}회':<12} {'O' if abs(len(monthly_off)+len(monthly_on) - 33) <= 5 else '~'}")
     print()
 
     # 전체 이벤트 타임라인
     print(f"── 전체 이벤트 타임라인 ──")
     type_labels = {
-        "EMERGENCY_EXIT": "🚨 D3 탈출",
-        "GOLDEN_CROSS_ENTRY": "⚡ GCE 진입",
-        "MONTHLY_OFF": "📋 월말 Off",
-        "MONTHLY_ON": "📋 월말 On",
+        "EMERGENCY_EXIT": "[!!] D3 Exit",
+        "GOLDEN_CROSS_ENTRY": "[**] GCE Entry",
+        "MONTHLY_OFF": "[--] Monthly Off",
+        "MONTHLY_ON": "[++] Monthly On",
     }
     for e in events:
         label = type_labels[e["type"]]
@@ -402,7 +402,7 @@ def build_trade_log(events: list[dict], indicators_df: pd.DataFrame) -> list[dic
             # 진입
             entry = e
         elif e["to"] == "Off" and entry is not None:
-            # 청산 — 페어링
+            # 청산 -페어링
             entry_date = pd.Timestamp(entry["date"])
             exit_date = pd.Timestamp(e["date"])
 
