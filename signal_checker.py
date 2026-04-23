@@ -39,8 +39,9 @@ DEFAULT_STATE = {
     "exit_count": 0,
     "entry_count": 0,
     "current_entry": None,
-    "trade_history": [],
 }
+
+TRADE_LOG_FILE = BASE_DIR / "trade_log.csv"
 
 
 def load_state() -> dict:
@@ -59,6 +60,21 @@ def save_state(state: dict) -> None:
         json.dumps(state, indent=2, ensure_ascii=False, default=str),
         encoding="utf-8",
     )
+
+
+def log_trade(entry: dict, exit_date: str, exit_type: str,
+              exit_price: float, exit_deviation: float) -> None:
+    """완료된 매매를 trade_log.csv에 기록."""
+    header = not TRADE_LOG_FILE.exists()
+    qqq_return = round((exit_price / entry["price"] - 1) * 100, 2)
+    with open(TRADE_LOG_FILE, "a", encoding="utf-8") as f:
+        if header:
+            f.write("entry_date,entry_type,entry_price,entry_deviation,"
+                    "exit_date,exit_type,exit_price,exit_deviation,qqq_return_pct\n")
+        f.write(
+            f"{entry['date']},{entry['type']},{entry['price']:.2f},{entry['deviation_pct']:+.2f},"
+            f"{exit_date},{exit_type},{exit_price:.2f},{exit_deviation:+.2f},{qqq_return:+.2f}\n"
+        )
 
 
 def log_signal(check_date: str, signal_type: str, state_val: str,
@@ -312,7 +328,6 @@ def main() -> None:
 
             # 매매 이력 기록
             if action["new_state"] == "On":
-                # 진입 — 현재 매매 시작
                 state["current_entry"] = {
                     "date": check_date,
                     "type": action["type"],
@@ -320,22 +335,10 @@ def main() -> None:
                     "deviation_pct": round(indicators["deviation_pct"], 2),
                 }
             elif action["new_state"] == "Off" and state.get("current_entry"):
-                # 청산 — 매매 완료, 이력에 추가
-                entry = state["current_entry"]
-                trade = {
-                    "entry_date": entry["date"],
-                    "entry_type": entry["type"],
-                    "entry_price": entry["price"],
-                    "exit_date": check_date,
-                    "exit_type": action["type"],
-                    "exit_price": indicators["close"],
-                    "qqq_return_pct": round(
-                        (indicators["close"] / entry["price"] - 1) * 100, 2
-                    ),
-                }
-                if "trade_history" not in state:
-                    state["trade_history"] = []
-                state["trade_history"].append(trade)
+                log_trade(
+                    state["current_entry"], check_date, action["type"],
+                    indicators["close"], indicators["deviation_pct"],
+                )
                 state["current_entry"] = None
 
             save_state(state)
