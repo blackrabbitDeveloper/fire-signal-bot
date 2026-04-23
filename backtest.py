@@ -389,6 +389,136 @@ def save_csv(events: list[dict], filepath: str) -> None:
     print(f"CSV 저장: {filepath}")
 
 
+def build_trade_log(events: list[dict], indicators_df: pd.DataFrame) -> list[dict]:
+    """이벤트를 진입/청산 페어링하여 매매 로그 생성.
+
+    On 진입 → Off 청산을 한 쌍으로 묶어 구간 수익률 계산.
+    """
+    trades = []
+    entry = None
+
+    for e in events:
+        if e["to"] == "On":
+            # 진입
+            entry = e
+        elif e["to"] == "Off" and entry is not None:
+            # 청산 — 페어링
+            entry_date = pd.Timestamp(entry["date"])
+            exit_date = pd.Timestamp(e["date"])
+
+            # 구간 QQQ 수익률
+            mask = (indicators_df.index >= entry_date) & (indicators_df.index <= exit_date)
+            segment = indicators_df.loc[mask, "close"]
+            if len(segment) >= 2:
+                qqq_return = (segment.iloc[-1] / segment.iloc[0] - 1) * 100
+            else:
+                qqq_return = 0.0
+
+            holding_days = (e["date"] - entry["date"]).days
+
+            trades.append({
+                "trade_no": len(trades) + 1,
+                "entry_date": entry["date"],
+                "entry_type": entry["type"],
+                "entry_price": entry["close"],
+                "exit_date": e["date"],
+                "exit_type": e["type"],
+                "exit_price": e["close"],
+                "holding_days": holding_days,
+                "qqq_return_pct": round(qqq_return, 2),
+                "entry_deviation": round(entry["deviation_pct"], 2),
+                "exit_deviation": round(e["deviation_pct"], 2),
+            })
+            entry = None
+
+    # 미청산 포지션 (현재 On 상태)
+    if entry is not None:
+        entry_date = pd.Timestamp(entry["date"])
+        segment = indicators_df.loc[indicators_df.index >= entry_date, "close"]
+        if len(segment) >= 2:
+            qqq_return = (segment.iloc[-1] / segment.iloc[0] - 1) * 100
+        else:
+            qqq_return = 0.0
+        holding_days = (indicators_df.index[-1].date() - entry["date"]).days
+
+        trades.append({
+            "trade_no": len(trades) + 1,
+            "entry_date": entry["date"],
+            "entry_type": entry["type"],
+            "entry_price": entry["close"],
+            "exit_date": "OPEN",
+            "exit_type": "HOLDING",
+            "exit_price": float(indicators_df["close"].iloc[-1]),
+            "holding_days": holding_days,
+            "qqq_return_pct": round(qqq_return, 2),
+            "entry_deviation": round(entry["deviation_pct"], 2),
+            "exit_deviation": None,
+        })
+
+    return trades
+
+
+def print_trade_log(trades: list[dict]) -> None:
+    """매매 로그 출력."""
+    if not trades:
+        return
+
+    print(f"\n{'='*80}")
+    print(f"  매매 로그 (On 진입 → Off 청산 페어링)")
+    print(f"{'='*80}\n")
+
+    print(f"  {'#':>3}  {'진입일':10} {'진입유형':12} {'진입가':>9}  {'청산일':10} {'청산유형':12} {'청산가':>9}  {'일수':>5}  {'QQQ수익':>8}")
+    print(f"  {'─'*88}")
+
+    wins = 0
+    losses = 0
+    total_return = 0.0
+
+    for t in trades:
+        exit_date = str(t["exit_date"])[:10]
+        exit_type = t["exit_type"][:12]
+        ret_str = f"{t['qqq_return_pct']:+.2f}%"
+
+        print(
+            f"  {t['trade_no']:>3}  {str(t['entry_date']):10} {t['entry_type']:12} "
+            f"${t['entry_price']:>8.2f}  {exit_date:10} {exit_type:12} "
+            f"${t['exit_price']:>8.2f}  {t['holding_days']:>5}  {ret_str:>8}"
+        )
+
+        if t["exit_type"] != "HOLDING":
+            total_return += t["qqq_return_pct"]
+            if t["qqq_return_pct"] >= 0:
+                wins += 1
+            else:
+                losses += 1
+
+    closed = wins + losses
+    print()
+    if closed > 0:
+        avg_return = total_return / closed
+        win_rate = wins / closed * 100
+        avg_hold = sum(t["holding_days"] for t in trades if t["exit_type"] != "HOLDING") / closed
+        print(f"  총 {closed}건 (승 {wins} / 패 {losses}) | 승률 {win_rate:.1f}% | 평균 수익 {avg_return:+.2f}% | 평균 보유 {avg_hold:.0f}일")
+    print()
+
+
+def save_trade_log_csv(trades: list[dict], filepath: str) -> None:
+    """매매 로그를 CSV로 저장."""
+    if not trades:
+        return
+    fields = [
+        "trade_no", "entry_date", "entry_type", "entry_price",
+        "exit_date", "exit_type", "exit_price",
+        "holding_days", "qqq_return_pct", "entry_deviation", "exit_deviation",
+    ]
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for t in trades:
+            writer.writerow({k: t.get(k) for k in fields})
+    print(f"매매 로그 CSV 저장: {filepath}")
+
+
 def download_multi(tickers: list[str], start: str) -> pd.DataFrame:
     """여러 종목 종가 다운로드 → DataFrame (columns=ticker)."""
     print(f"멀티 종목 다운로드: {tickers} ({start} ~) ...")
@@ -551,6 +681,7 @@ def main():
     parser = argparse.ArgumentParser(description="H 전략 시그널 백테스트")
     parser.add_argument("--start", default="2012-01-01", help="백테스트 시작일 (기본: 2012-01-01)")
     parser.add_argument("--csv", default=None, help="결과 CSV 파일 경로")
+    parser.add_argument("--trades", default=None, help="매매 로그 CSV 파일 경로")
     parser.add_argument("--portfolio", action="store_true", help="실제 포트폴리오 종목 백테스트 추가")
     args = parser.parse_args()
 
@@ -566,6 +697,12 @@ def main():
     perf = compute_performance(indicators_df, daily_states)
 
     print_results(events, state, perf)
+
+    # 매매 로그
+    trades = build_trade_log(events, indicators_df)
+    print_trade_log(trades)
+    if args.trades:
+        save_trade_log_csv(trades, args.trades)
 
     # 실제 포트폴리오 백테스트
     if args.portfolio:

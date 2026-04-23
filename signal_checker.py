@@ -38,6 +38,8 @@ DEFAULT_STATE = {
     "last_action_date": None,
     "exit_count": 0,
     "entry_count": 0,
+    "current_entry": None,
+    "trade_history": [],
 }
 
 
@@ -307,6 +309,34 @@ def main() -> None:
                 state["exit_count"] = state.get("exit_count", 0) + 1
             elif action["type"] == "GOLDEN_CROSS_ENTRY":
                 state["entry_count"] = state.get("entry_count", 0) + 1
+
+            # 매매 이력 기록
+            if action["new_state"] == "On":
+                # 진입 — 현재 매매 시작
+                state["current_entry"] = {
+                    "date": check_date,
+                    "type": action["type"],
+                    "price": indicators["close"],
+                    "deviation_pct": round(indicators["deviation_pct"], 2),
+                }
+            elif action["new_state"] == "Off" and state.get("current_entry"):
+                # 청산 — 매매 완료, 이력에 추가
+                entry = state["current_entry"]
+                trade = {
+                    "entry_date": entry["date"],
+                    "entry_type": entry["type"],
+                    "entry_price": entry["price"],
+                    "exit_date": check_date,
+                    "exit_type": action["type"],
+                    "exit_price": indicators["close"],
+                    "qqq_return_pct": round(
+                        (indicators["close"] / entry["price"] - 1) * 100, 2
+                    ),
+                }
+                if "trade_history" not in state:
+                    state["trade_history"] = []
+                state["trade_history"].append(trade)
+                state["current_entry"] = None
 
             save_state(state)
             print(f"  → 상태 변경: {old} → {action['new_state']}")

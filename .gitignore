@@ -10,3 +10,5 @@ build/
 venv/
 .omc/
 signal_log.csv
+backtest_*.csv
+trade_log_*.csv
