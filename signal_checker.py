@@ -277,7 +277,7 @@ def check_signals(state: dict, indicators: dict, is_month_end: bool = False) -> 
 
     # 7. 일일 상태 (액션 없을 때)
     if not actions:
-        gc_mark = "✓" if indicators["golden_cross"] else "✗"
+        gc_mark = "Y" if indicators["golden_cross"] else "N"
         pre_tag = f" [PRE {days_held}일]" if in_pre else ""
         actions.append({
             "type": "DAILY_STATUS",
@@ -382,8 +382,8 @@ def main() -> None:
     print(f"편차: {indicators['deviation_pct']:+.2f}%")
     print(f"VIX: {indicators['vix']:.2f} (5일 drop: {indicators['vix_drop']:+.2f})")
     print(f"RSI(14): {indicators['rsi']:.1f}")
-    print(f"골든크로스: {'✓' if indicators['golden_cross'] else '✗'}")
-    print(f"월말: {'✓' if is_me else '✗'}")
+    print(f"골든크로스: {'Y' if indicators['golden_cross'] else 'N'}")
+    print(f"월말: {'Y' if is_me else 'N'}")
     print()
 
     # 5. 시그널 체크
@@ -392,10 +392,10 @@ def main() -> None:
     # 6. 처리
     for action in actions:
         urgency_marker = {
-            "CRITICAL": "🚨🚨🚨",
-            "HIGH": "⚡⚡",
-            "NORMAL": "📋",
-            "INFO": "ℹ️",
+            "CRITICAL": "[!!!]",
+            "HIGH": "[!!]",
+            "NORMAL": "[--]",
+            "INFO": "[ii]",
         }.get(action["urgency"], "")
 
         print(f"{urgency_marker} [{action['type']}] {action['message']}")
