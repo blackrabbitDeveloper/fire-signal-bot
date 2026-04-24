@@ -23,7 +23,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import (
     EMERGENCY_EXIT_THRESHOLD, GOLDEN_CROSS_ENTRY_THRESHOLD,
-    SMA200_PERIOD, SMA50_PERIOD, RSI_PERIOD, TICKER,
+    SMA200_PERIOD, SMA50_PERIOD, RSI_PERIOD, TICKER, VIX_TICKER,
+    PRE_VIX_THRESHOLD, PRE_VIX_DROP_THRESHOLD, PRE_VIX_DROP_LOOKBACK,
+    PRE_COOLDOWN, PRE_MONTHLY_COOLDOWN,
 )
 
 
@@ -40,7 +42,20 @@ def download_history(start: str = "2000-01-01") -> pd.Series:
     return close
 
 
-def compute_all_indicators(close: pd.Series) -> pd.DataFrame:
+def download_vix_history(start: str = "2000-01-01") -> pd.Series:
+    """VIX 종가 시리즈 다운로드."""
+    print(f"데이터 다운로드: {VIX_TICKER} ({start} ~ 현재) ...")
+    vix = yf.download(VIX_TICKER, start=start, auto_adjust=True, progress=False)
+    if isinstance(vix.columns, pd.MultiIndex):
+        close = vix[("Close", VIX_TICKER)].dropna()
+    else:
+        close = vix["Close"].dropna()
+    close = close.astype(float)
+    print(f"  -> {len(close)}일 로드 완료 ({close.index[0].date()} ~ {close.index[-1].date()})")
+    return close
+
+
+def compute_all_indicators(close: pd.Series, vix_close: pd.Series | None = None) -> pd.DataFrame:
     """전체 기간 지표를 한번에 계산 (벡터화)."""
     sma200 = close.rolling(SMA200_PERIOD).mean()
     sma50 = close.rolling(SMA50_PERIOD).mean()
@@ -63,7 +78,19 @@ def compute_all_indicators(close: pd.Series) -> pd.DataFrame:
         "above_sma200": close > sma200,
         "golden_cross": sma50 > sma200,
     })
-    return df.dropna()
+
+    # VIX 데이터 병합
+    if vix_close is not None:
+        vix_df = pd.DataFrame({"vix": vix_close})
+        vix_df["vix_drop"] = vix_close.shift(PRE_VIX_DROP_LOOKBACK) - vix_close
+        df = df.join(vix_df, how="left")
+        df["vix"] = df["vix"].ffill()
+        df["vix_drop"] = df["vix_drop"].ffill()
+    else:
+        df["vix"] = 0.0
+        df["vix_drop"] = 0.0
+
+    return df.dropna(subset=["close", "sma200", "sma50"])
 
 
 def find_month_end_trading_days(dates: pd.DatetimeIndex) -> set:
@@ -77,9 +104,10 @@ def find_month_end_trading_days(dates: pd.DatetimeIndex) -> set:
     return month_ends
 
 
-def run_backtest(close: pd.Series, start_date: str = "2012-01-01") -> list[dict]:
-    """날짜별 시그널 시뮬레이션."""
-    indicators_df = compute_all_indicators(close)
+def run_backtest(close: pd.Series, start_date: str = "2012-01-01",
+                  vix_close: pd.Series | None = None) -> list[dict]:
+    """날짜별 시그널 시뮬레이션 (PRE 포함)."""
+    indicators_df = compute_all_indicators(close, vix_close)
     month_ends = find_month_end_trading_days(indicators_df.index)
 
     # 시작일 필터
@@ -90,7 +118,7 @@ def run_backtest(close: pd.Series, start_date: str = "2012-01-01") -> list[dict]
         print("ERROR: 시작일 이후 데이터 없음")
         return []
 
-    # 초기 상태 -첫 날 SMA200 기준으로 설정
+    # 초기 상태 — 첫 날 SMA200 기준으로 설정
     first_row = indicators_df.iloc[0]
     initial_state = "On" if first_row["above_sma200"] else "Off"
 
@@ -98,84 +126,94 @@ def run_backtest(close: pd.Series, start_date: str = "2012-01-01") -> list[dict]
         "state": initial_state,
         "exit_count": 0,
         "entry_count": 0,
+        "in_pre": False,
+        "pre_entry_day_idx": -1,
+        "pre_entry_price": 0.0,
+        "last_pre_trigger_idx": -10000,
     }
 
     events = []
     daily_states = []
     total_days = len(indicators_df)
 
+    def _make_event(today, etype, efrom, eto, ind):
+        return {
+            "date": today,
+            "type": etype,
+            "from": efrom,
+            "to": eto,
+            "close": ind["close"],
+            "sma200": ind["sma200"],
+            "sma50": ind["sma50"],
+            "deviation_pct": ind["deviation_pct"],
+            "rsi": ind["rsi"],
+            "golden_cross": ind["golden_cross"],
+            "vix": ind.get("vix", 0),
+            "vix_drop": ind.get("vix_drop", 0),
+        }
+
     for i, (dt, row) in enumerate(indicators_df.iterrows()):
         today = dt.date()
         is_month_end = today in month_ends
         current = state["state"]
+        in_pre = state["in_pre"]
+        days_held = i - state["pre_entry_day_idx"] if in_pre else 0
+        monthly_active = not (in_pre and days_held < PRE_MONTHLY_COOLDOWN)
 
         indicators = row.to_dict()
         action = None
 
-        # 1. 긴급 탈출 (On → Off)
-        if current == "On" and indicators["deviation"] <= EMERGENCY_EXIT_THRESHOLD:
-            action = {
-                "date": today,
-                "type": "EMERGENCY_EXIT",
-                "from": "On",
-                "to": "Off",
-                "close": indicators["close"],
-                "sma200": indicators["sma200"],
-                "sma50": indicators["sma50"],
-                "deviation_pct": indicators["deviation_pct"],
-                "rsi": indicators["rsi"],
-                "golden_cross": indicators["golden_cross"],
-            }
+        # 1. PRE 가격 Exit (최우선)
+        if in_pre and indicators["close"] < state["pre_entry_price"]:
+            action = _make_event(today, "PRE_PRICE_EXIT", "On", "Off", indicators)
+            state["state"] = "Off"
+            state["in_pre"] = False
+            state["exit_count"] += 1
+
+        # 2. 긴급 탈출 (On, PRE 아닌 경우)
+        elif current == "On" and not in_pre and indicators["deviation"] <= EMERGENCY_EXIT_THRESHOLD:
+            action = _make_event(today, "EMERGENCY_EXIT", "On", "Off", indicators)
             state["state"] = "Off"
             state["exit_count"] += 1
 
-        # 2. 골든크로스 Entry (Off → On)
-        elif current == "Off" and indicators["deviation"] >= GOLDEN_CROSS_ENTRY_THRESHOLD and indicators["golden_cross"]:
-            action = {
-                "date": today,
-                "type": "GOLDEN_CROSS_ENTRY",
-                "from": "Off",
-                "to": "On",
-                "close": indicators["close"],
-                "sma200": indicators["sma200"],
-                "sma50": indicators["sma50"],
-                "deviation_pct": indicators["deviation_pct"],
-                "rsi": indicators["rsi"],
-                "golden_cross": indicators["golden_cross"],
-            }
+        # 3. PRE Entry (Off 상태)
+        elif (current == "Off"
+              and (i - state["last_pre_trigger_idx"]) >= PRE_COOLDOWN
+              and indicators["deviation"] <= EMERGENCY_EXIT_THRESHOLD
+              and indicators.get("vix", 0) > PRE_VIX_THRESHOLD
+              and indicators.get("vix_drop", 0) >= PRE_VIX_DROP_THRESHOLD):
+            action = _make_event(today, "PRE_ENTRY", "Off", "On", indicators)
+            state["state"] = "On"
+            state["in_pre"] = True
+            state["pre_entry_day_idx"] = i
+            state["pre_entry_price"] = indicators["close"]
+            state["last_pre_trigger_idx"] = i
+            state["entry_count"] += 1
+
+        # 4. 골든크로스 Entry (Off, PRE 아닌 경우)
+        elif (current == "Off" and not in_pre
+              and indicators["deviation"] >= GOLDEN_CROSS_ENTRY_THRESHOLD
+              and indicators["golden_cross"]):
+            action = _make_event(today, "GOLDEN_CROSS_ENTRY", "Off", "On", indicators)
             state["state"] = "On"
             state["entry_count"] += 1
 
-        # 3. 월말 On/Off
-        elif is_month_end:
-            if current == "On" and not indicators["above_sma200"]:
-                action = {
-                    "date": today,
-                    "type": "MONTHLY_OFF",
-                    "from": "On",
-                    "to": "Off",
-                    "close": indicators["close"],
-                    "sma200": indicators["sma200"],
-                    "sma50": indicators["sma50"],
-                    "deviation_pct": indicators["deviation_pct"],
-                    "rsi": indicators["rsi"],
-                    "golden_cross": indicators["golden_cross"],
-                }
-                state["state"] = "Off"
-            elif current == "Off" and indicators["above_sma200"]:
-                action = {
-                    "date": today,
-                    "type": "MONTHLY_ON",
-                    "from": "Off",
-                    "to": "On",
-                    "close": indicators["close"],
-                    "sma200": indicators["sma200"],
-                    "sma50": indicators["sma50"],
-                    "deviation_pct": indicators["deviation_pct"],
-                    "rsi": indicators["rsi"],
-                    "golden_cross": indicators["golden_cross"],
-                }
-                state["state"] = "On"
+        else:
+            # 5. PRE 자동 해제 (20일 + 편차 > 0, 월말 아님)
+            if in_pre and days_held >= PRE_MONTHLY_COOLDOWN and not is_month_end:
+                if indicators["deviation"] > 0:
+                    action = _make_event(today, "PRE_AUTO_RELEASE", "On", "On", indicators)
+                    state["in_pre"] = False
+
+            # 6. 월말 On/Off (쿨타임 아닐 때)
+            if is_month_end and monthly_active:
+                if current == "On" and not indicators["above_sma200"]:
+                    action = _make_event(today, "MONTHLY_OFF", "On", "Off", indicators)
+                    state["state"] = "Off"
+                    state["in_pre"] = False
+                elif current == "Off" and indicators["above_sma200"]:
+                    action = _make_event(today, "MONTHLY_ON", "Off", "On", indicators)
+                    state["state"] = "On"
 
         if action:
             events.append(action)
@@ -273,12 +311,18 @@ def print_results(events: list[dict], state: dict, perf: dict | None = None) -> 
     # 유형별 분류
     emergency = [e for e in events if e["type"] == "EMERGENCY_EXIT"]
     gce = [e for e in events if e["type"] == "GOLDEN_CROSS_ENTRY"]
+    pre_entry = [e for e in events if e["type"] == "PRE_ENTRY"]
+    pre_exit = [e for e in events if e["type"] == "PRE_PRICE_EXIT"]
+    pre_release = [e for e in events if e["type"] == "PRE_AUTO_RELEASE"]
     monthly_off = [e for e in events if e["type"] == "MONTHLY_OFF"]
     monthly_on = [e for e in events if e["type"] == "MONTHLY_ON"]
 
     print(f"── 발동 횟수 요약 ──")
     print(f"  긴급 탈출 (D3):     {len(emergency)}회")
     print(f"  골든크로스 Entry:   {len(gce)}회")
+    print(f"  PRE Entry:          {len(pre_entry)}회")
+    print(f"  PRE 가격 Exit:      {len(pre_exit)}회")
+    print(f"  PRE 자동 해제:      {len(pre_release)}회")
     print(f"  월말 Off:           {len(monthly_off)}회")
     print(f"  월말 On:            {len(monthly_on)}회")
     print(f"  전체 상태 전환:     {len(events)}회")
@@ -297,6 +341,17 @@ def print_results(events: list[dict], state: dict, perf: dict | None = None) -> 
         for e in gce:
             gc = "Y" if e["golden_cross"] else "N"
             print(f"  {e['date']}  QQQ={e['close']:>8.2f}  SMA200={e['sma200']:>8.2f}  편차={e['deviation_pct']:>+7.2f}%  GC={gc}")
+        print()
+
+    # PRE 상세
+    if pre_entry or pre_exit or pre_release:
+        print(f"── PRE 이벤트 상세 ──")
+        for e in pre_entry:
+            print(f"  {e['date']}  [ENTRY]   QQQ={e['close']:>8.2f}  편차={e['deviation_pct']:>+7.2f}%  VIX={e.get('vix',0):>5.1f}  drop={e.get('vix_drop',0):>+5.1f}")
+        for e in pre_exit:
+            print(f"  {e['date']}  [P.EXIT]  QQQ={e['close']:>8.2f}  편차={e['deviation_pct']:>+7.2f}%  VIX={e.get('vix',0):>5.1f}")
+        for e in pre_release:
+            print(f"  {e['date']}  [RELEASE] QQQ={e['close']:>8.2f}  편차={e['deviation_pct']:>+7.2f}%")
         print()
 
     # 월말 전환 상세
@@ -320,6 +375,8 @@ def print_results(events: list[dict], state: dict, perf: dict | None = None) -> 
     print(f"  {'D3 긴급 탈출':<20} {'3회':<12} {f'{len(emergency)}회':<12} {'O' if len(emergency) == 3 else 'X'}")
     print(f"  {'D3 발동 연도':<20} {str(guide_d3_years):<12} {str(d3_years):<12} {'O' if d3_years == guide_d3_years else '~'}")
     print(f"  {'GCE 진입':<20} {'4회':<12} {f'{len(gce)}회':<12} {'O' if len(gce) == 4 else '~'}")
+    print(f"  {'PRE Entry':<20} {'-':<12} {f'{len(pre_entry)}회':<12} {'N/A'}")
+    print(f"  {'PRE 가격 Exit':<20} {'-':<12} {f'{len(pre_exit)}회':<12} {'N/A'}")
     print(f"  {'월말 On/Off':<20} {'~33회':<12} {f'{len(monthly_off)+len(monthly_on)}회':<12} {'O' if abs(len(monthly_off)+len(monthly_on) - 33) <= 5 else '~'}")
     print()
 
@@ -328,6 +385,9 @@ def print_results(events: list[dict], state: dict, perf: dict | None = None) -> 
     type_labels = {
         "EMERGENCY_EXIT": "[!!] D3 Exit",
         "GOLDEN_CROSS_ENTRY": "[**] GCE Entry",
+        "PRE_ENTRY": "[PP] PRE Entry",
+        "PRE_PRICE_EXIT": "[PX] PRE P.Exit",
+        "PRE_AUTO_RELEASE": "[PR] PRE Release",
         "MONTHLY_OFF": "[--] Monthly Off",
         "MONTHLY_ON": "[++] Monthly On",
     }
@@ -380,7 +440,7 @@ def save_csv(events: list[dict], filepath: str) -> None:
     """이벤트 이력을 CSV로 저장."""
     if not events:
         return
-    fields = ["date", "type", "from", "to", "close", "sma200", "sma50", "deviation_pct", "rsi", "golden_cross"]
+    fields = ["date", "type", "from", "to", "close", "sma200", "sma50", "deviation_pct", "rsi", "golden_cross", "vix", "vix_drop"]
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
@@ -736,11 +796,12 @@ def main():
     # 데이터 다운로드 (SMA200 계산을 위해 시작일 2년 전부터)
     download_start = str(int(args.start[:4]) - 2) + args.start[4:]
     close = download_history(start=download_start)
+    vix_close = download_vix_history(start=download_start)
 
-    events, state, daily_states = run_backtest(close, start_date=args.start)
+    events, state, daily_states = run_backtest(close, start_date=args.start, vix_close=vix_close)
 
     # QQQ 기준 수익률 계산
-    indicators_df = compute_all_indicators(close)
+    indicators_df = compute_all_indicators(close, vix_close)
     indicators_df = indicators_df[indicators_df.index >= pd.Timestamp(args.start)]
     perf = compute_performance(indicators_df, daily_states)
 
@@ -775,8 +836,9 @@ def main():
             print("── DBMF 상장 이후 구간 별도 테스트 ──")
             dbmf_start = "2019-06-01"
             close_dbmf = close[close.index >= pd.Timestamp("2017-06-01")]
-            events_d, state_d, daily_states_d = run_backtest(close_dbmf, start_date=dbmf_start)
-            indicators_dbmf = compute_all_indicators(close_dbmf)
+            vix_dbmf = vix_close[vix_close.index >= pd.Timestamp("2017-06-01")] if vix_close is not None else None
+            events_d, state_d, daily_states_d = run_backtest(close_dbmf, start_date=dbmf_start, vix_close=vix_dbmf)
+            indicators_dbmf = compute_all_indicators(close_dbmf, vix_dbmf)
             indicators_dbmf = indicators_dbmf[indicators_dbmf.index >= pd.Timestamp(dbmf_start)]
             port_dbmf = compute_portfolio_performance(indicators_dbmf, daily_states_d, dbmf_start)
             if port_dbmf:

@@ -13,14 +13,17 @@ import pandas as pd
 import numpy as np
 
 from config import (
-    TICKER, LOOKBACK_DAYS, SMA200_PERIOD, SMA50_PERIOD, RSI_PERIOD,
+    TICKER, VIX_TICKER, LOOKBACK_DAYS, SMA200_PERIOD, SMA50_PERIOD, RSI_PERIOD,
     EMERGENCY_EXIT_THRESHOLD, GOLDEN_CROSS_ENTRY_THRESHOLD,
+    PRE_VIX_THRESHOLD, PRE_VIX_DROP_THRESHOLD, PRE_VIX_DROP_LOOKBACK,
+    PRE_COOLDOWN, PRE_MONTHLY_COOLDOWN,
     MAX_RETRIES, RETRY_DELAY,
 )
 from notifiers.discord import (
     build_daily_status_embed, build_emergency_exit_embed,
     build_error_embed, build_golden_cross_entry_embed,
-    build_monthly_change_embed, send_notification,
+    build_monthly_change_embed, build_pre_entry_embed,
+    build_pre_price_exit_embed, send_notification,
 )
 
 # ── 파일 경로 ──
@@ -39,6 +42,11 @@ DEFAULT_STATE = {
     "exit_count": 0,
     "entry_count": 0,
     "current_entry": None,
+    "in_pre": False,
+    "pre_entry_day_idx": -1,
+    "pre_entry_price": 0.0,
+    "last_pre_trigger_idx": -10000,
+    "day_idx": 0,
 }
 
 TRADE_LOG_FILE = BASE_DIR / "trade_log.csv"
@@ -94,24 +102,29 @@ def log_signal(check_date: str, signal_type: str, state_val: str,
 
 # ── 데이터 수집 ──
 
-def get_qqq_data(lookback_days: int = LOOKBACK_DAYS) -> pd.Series:
-    """QQQ 종가 시리즈 반환. 실패 시 재시도."""
+def _download_ticker(ticker: str, lookback_days: int) -> pd.Series:
+    """단일 종목 종가 시리즈 다운로드."""
+    data = yf.download(
+        ticker, period=f"{lookback_days}d",
+        auto_adjust=True, progress=False,
+    )
+    if isinstance(data.columns, pd.MultiIndex):
+        close = data[("Close", ticker)].dropna()
+    else:
+        close = data["Close"].dropna()
+    return close.astype(float)
+
+
+def get_market_data(lookback_days: int = LOOKBACK_DAYS) -> tuple[pd.Series, pd.Series]:
+    """QQQ + VIX 종가 시리즈 반환. 실패 시 재시도."""
     last_error = None
     for attempt in range(MAX_RETRIES):
         try:
-            qqq = yf.download(
-                TICKER, period=f"{lookback_days}d",
-                auto_adjust=True, progress=False,
-            )
-            if isinstance(qqq.columns, pd.MultiIndex):
-                close = qqq[("Close", TICKER)].dropna()
-            else:
-                close = qqq["Close"].dropna()
-
-            close = close.astype(float)
-            if len(close) < SMA200_PERIOD:
-                raise ValueError(f"데이터 부족: {len(close)}일 ({SMA200_PERIOD}일 필요)")
-            return close
+            qqq_close = _download_ticker(TICKER, lookback_days)
+            if len(qqq_close) < SMA200_PERIOD:
+                raise ValueError(f"QQQ 데이터 부족: {len(qqq_close)}일 ({SMA200_PERIOD}일 필요)")
+            vix_close = _download_ticker(VIX_TICKER, lookback_days)
+            return qqq_close, vix_close
         except Exception as e:
             last_error = e
             if attempt < MAX_RETRIES - 1:
@@ -123,8 +136,8 @@ def get_qqq_data(lookback_days: int = LOOKBACK_DAYS) -> pd.Series:
 
 # ── 지표 계산 ──
 
-def compute_indicators(close: pd.Series) -> dict:
-    """SMA200, SMA50, 편차, RSI 계산."""
+def compute_indicators(close: pd.Series, vix_close: pd.Series | None = None) -> dict:
+    """SMA200, SMA50, 편차, RSI, VIX 계산."""
     sma200 = close.rolling(SMA200_PERIOD).mean()
     sma50 = close.rolling(SMA50_PERIOD).mean()
 
@@ -140,7 +153,7 @@ def compute_indicators(close: pd.Series) -> dict:
     rs = gain / loss
     rsi = float((100 - 100 / (1 + rs)).iloc[-1])
 
-    return {
+    result = {
         "close": current_close,
         "sma200": current_sma200,
         "sma50": current_sma50,
@@ -149,18 +162,45 @@ def compute_indicators(close: pd.Series) -> dict:
         "rsi": rsi,
         "above_sma200": current_close > current_sma200,
         "golden_cross": current_sma50 > current_sma200,
+        "vix": 0.0,
+        "vix_drop": 0.0,
     }
+
+    if vix_close is not None and len(vix_close) > PRE_VIX_DROP_LOOKBACK:
+        current_vix = float(vix_close.iloc[-1])
+        vix_5d_ago = float(vix_close.iloc[-1 - PRE_VIX_DROP_LOOKBACK])
+        result["vix"] = current_vix
+        result["vix_drop"] = vix_5d_ago - current_vix
+
+    return result
 
 
 # ── 시그널 판단 ──
 
 def check_signals(state: dict, indicators: dict, is_month_end: bool = False) -> list[dict]:
-    """시그널 체크 — 액션 리스트 반환."""
+    """V16a_c20 시그널 체크 — 액션 리스트 반환."""
     actions = []
     current = state["state"]
+    in_pre = state.get("in_pre", False)
+    day_idx = state.get("day_idx", 0)
+    days_held = day_idx - state.get("pre_entry_day_idx", -1) if in_pre else 0
+    monthly_active = not (in_pre and days_held < PRE_MONTHLY_COOLDOWN)
 
-    # 1. 긴급 탈출 (On 상태, 매일)
-    if current == "On" and indicators["deviation"] <= EMERGENCY_EXIT_THRESHOLD:
+    # 1. PRE 가격 Exit (최우선 — PRE 보유 중)
+    if in_pre and indicators["close"] < state.get("pre_entry_price", 0):
+        actions.append({
+            "type": "PRE_PRICE_EXIT",
+            "urgency": "CRITICAL",
+            "message": (f"★ PRE 가격 Exit! QQQ {indicators['close']:.2f} "
+                        f"< 진입가 {state['pre_entry_price']:.2f}"),
+            "action": "TQQQ+XLU 전량 매도 → DBMF 매수",
+            "new_state": "Off",
+            "clear_pre": True,
+        })
+        return actions
+
+    # 2. 긴급 탈출 (On 상태, PRE 아닌 경우)
+    if current == "On" and not in_pre and indicators["deviation"] <= EMERGENCY_EXIT_THRESHOLD:
         actions.append({
             "type": "EMERGENCY_EXIT",
             "urgency": "CRITICAL",
@@ -168,10 +208,31 @@ def check_signals(state: dict, indicators: dict, is_month_end: bool = False) -> 
             "action": "TQQQ+XLU 전량 매도 → DBMF 매수",
             "new_state": "Off",
         })
-        return actions  # 긴급 탈출은 즉시 반환
+        return actions
 
-    # 2. 골든크로스 Entry (Off 상태, 매일)
-    if current == "Off" and indicators["deviation"] >= GOLDEN_CROSS_ENTRY_THRESHOLD and indicators["golden_cross"]:
+    # 3. PRE Entry (Off 상태)
+    days_since_pre = day_idx - state.get("last_pre_trigger_idx", -10000)
+    if (current == "Off"
+        and days_since_pre >= PRE_COOLDOWN
+        and indicators["deviation"] <= EMERGENCY_EXIT_THRESHOLD
+        and indicators.get("vix", 0) > PRE_VIX_THRESHOLD
+        and indicators.get("vix_drop", 0) >= PRE_VIX_DROP_THRESHOLD):
+        actions.append({
+            "type": "PRE_ENTRY",
+            "urgency": "CRITICAL",
+            "message": (f"★★ PRE Entry! 편차 {indicators['deviation_pct']:+.2f}%, "
+                        f"VIX {indicators['vix']:.1f}, drop +{indicators['vix_drop']:.1f}"),
+            "action": "DBMF 매도 → TQQQ+XLU+GLD 매수 (패닉 바닥 진입)",
+            "new_state": "On",
+            "set_pre": True,
+            "pre_entry_price": indicators["close"],
+        })
+        return actions
+
+    # 4. 골든크로스 Entry (Off 상태, PRE 아닌 경우)
+    if (current == "Off" and not in_pre
+        and indicators["deviation"] >= GOLDEN_CROSS_ENTRY_THRESHOLD
+        and indicators["golden_cross"]):
         actions.append({
             "type": "GOLDEN_CROSS_ENTRY",
             "urgency": "HIGH",
@@ -181,8 +242,21 @@ def check_signals(state: dict, indicators: dict, is_month_end: bool = False) -> 
         })
         return actions
 
-    # 3. 월말 체크 (매월 마지막 거래일)
-    if is_month_end:
+    # 5. PRE 자동 해제 (20일 + 편차 > 0, 월말 아님)
+    if in_pre and days_held >= PRE_MONTHLY_COOLDOWN and not is_month_end:
+        if indicators["deviation"] > 0:
+            actions.append({
+                "type": "PRE_AUTO_RELEASE",
+                "urgency": "INFO",
+                "message": (f"PRE 보호 해제 (On 유지, 일반 모드 복귀). "
+                            f"편차 {indicators['deviation_pct']:+.2f}%, {days_held}일 보유"),
+                "action": "포지션 변경 없음 (PRE 플래그만 해제)",
+                "new_state": current,
+                "clear_pre": True,
+            })
+
+    # 6. 월말 체크 (쿨타임 아닐 때)
+    if is_month_end and monthly_active:
         if current == "On" and not indicators["above_sma200"]:
             actions.append({
                 "type": "MONTHLY_OFF",
@@ -190,6 +264,7 @@ def check_signals(state: dict, indicators: dict, is_month_end: bool = False) -> 
                 "message": f"월말 Off 전환. QQQ={indicators['close']:.2f} < SMA200={indicators['sma200']:.2f}",
                 "action": "TQQQ+XLU 전량 매도 → DBMF 매수",
                 "new_state": "Off",
+                "clear_pre": True,
             })
         elif current == "Off" and indicators["above_sma200"]:
             actions.append({
@@ -200,16 +275,18 @@ def check_signals(state: dict, indicators: dict, is_month_end: bool = False) -> 
                 "new_state": "On",
             })
 
-    # 4. 일일 상태 (액션 없을 때)
+    # 7. 일일 상태 (액션 없을 때)
     if not actions:
         gc_mark = "✓" if indicators["golden_cross"] else "✗"
+        pre_tag = f" [PRE {days_held}일]" if in_pre else ""
         actions.append({
             "type": "DAILY_STATUS",
             "urgency": "INFO",
             "message": (
-                f"[{current}] QQQ={indicators['close']:.2f}, "
-                f"SMA200={indicators['sma200']:.2f}, "
+                f"[{current}{pre_tag}] QQQ={indicators['close']:.2f}, "
                 f"편차={indicators['deviation_pct']:+.2f}%, "
+                f"VIX={indicators.get('vix', 0):.1f} "
+                f"(drop {indicators.get('vix_drop', 0):+.1f}), "
                 f"RSI={indicators['rsi']:.1f}, GC={gc_mark}"
             ),
             "action": "유지",
@@ -243,8 +320,12 @@ def is_trading_day() -> bool:
 
 def send_action_alert(action: dict, state: dict, indicators: dict, check_date: str) -> None:
     """액션 유형에 따라 적절한 Discord embed 생성 및 발송."""
-    if action["type"] == "EMERGENCY_EXIT":
+    if action["type"] == "PRE_PRICE_EXIT":
+        embed = build_pre_price_exit_embed(indicators, state, check_date)
+    elif action["type"] == "EMERGENCY_EXIT":
         embed = build_emergency_exit_embed(indicators, check_date)
+    elif action["type"] == "PRE_ENTRY":
+        embed = build_pre_entry_embed(indicators, check_date)
     elif action["type"] == "GOLDEN_CROSS_ENTRY":
         embed = build_golden_cross_entry_embed(indicators, check_date)
     elif action["type"] in ("MONTHLY_ON", "MONTHLY_OFF"):
@@ -280,21 +361,26 @@ def main() -> None:
 
     # 3. 데이터 수집
     try:
-        close = get_qqq_data()
+        close, vix_close = get_market_data()
     except Exception as e:
         print(f"ERROR: {e}")
         send_notification(build_error_embed(str(e)))
         raise
 
     # 4. 지표 계산
-    indicators = compute_indicators(close)
+    indicators = compute_indicators(close, vix_close)
     is_me = is_last_trading_day()
 
-    print(f"현재 상태: {state['state']}")
+    # day_idx 증가
+    state["day_idx"] = state.get("day_idx", 0) + 1
+
+    in_pre = state.get("in_pre", False)
+    pre_tag = " (PRE)" if in_pre else ""
+    print(f"현재 상태: {state['state']}{pre_tag}")
     print(f"QQQ: {indicators['close']:.2f}")
-    print(f"SMA200: {indicators['sma200']:.2f}")
-    print(f"SMA50: {indicators['sma50']:.2f}")
+    print(f"SMA200: {indicators['sma200']:.2f} / SMA50: {indicators['sma50']:.2f}")
     print(f"편차: {indicators['deviation_pct']:+.2f}%")
+    print(f"VIX: {indicators['vix']:.2f} (5일 drop: {indicators['vix_drop']:+.2f})")
     print(f"RSI(14): {indicators['rsi']:.1f}")
     print(f"골든크로스: {'✓' if indicators['golden_cross'] else '✗'}")
     print(f"월말: {'✓' if is_me else '✗'}")
@@ -316,27 +402,44 @@ def main() -> None:
         print(f"  → {action['action']}")
 
         # 상태 업데이트
-        if action["new_state"] != state["state"]:
+        state_changed = action["new_state"] != state["state"]
+        pre_changed = action.get("set_pre") or action.get("clear_pre")
+
+        if state_changed or pre_changed:
             old = state["state"]
             state["state"] = action["new_state"]
             state["last_action"] = action["type"]
             state["last_action_date"] = check_date
             state["last_check"] = check_date
 
+            # PRE Entry
+            if action.get("set_pre"):
+                state["in_pre"] = True
+                state["pre_entry_day_idx"] = state["day_idx"]
+                state["pre_entry_price"] = action["pre_entry_price"]
+                state["last_pre_trigger_idx"] = state["day_idx"]
+                state["entry_count"] = state.get("entry_count", 0) + 1
+
+            # PRE 해제 (가격 Exit, 월말 Off, 자동 해제)
+            if action.get("clear_pre"):
+                state["in_pre"] = False
+
             if action["type"] == "EMERGENCY_EXIT":
+                state["exit_count"] = state.get("exit_count", 0) + 1
+            elif action["type"] == "PRE_PRICE_EXIT":
                 state["exit_count"] = state.get("exit_count", 0) + 1
             elif action["type"] == "GOLDEN_CROSS_ENTRY":
                 state["entry_count"] = state.get("entry_count", 0) + 1
 
             # 매매 이력 기록
-            if action["new_state"] == "On":
+            if action["new_state"] == "On" and state_changed:
                 state["current_entry"] = {
                     "date": check_date,
                     "type": action["type"],
                     "price": indicators["close"],
                     "deviation_pct": round(indicators["deviation_pct"], 2),
                 }
-            elif action["new_state"] == "Off" and state.get("current_entry"):
+            elif action["new_state"] == "Off" and state_changed and state.get("current_entry"):
                 log_trade(
                     state["current_entry"], check_date, action["type"],
                     indicators["close"], indicators["deviation_pct"],
@@ -344,7 +447,10 @@ def main() -> None:
                 state["current_entry"] = None
 
             save_state(state)
-            print(f"  → 상태 변경: {old} → {action['new_state']}")
+            if state_changed:
+                print(f"  -> 상태 변경: {old} -> {action['new_state']}")
+            elif pre_changed:
+                print(f"  -> PRE 플래그 변경")
         else:
             state["last_check"] = check_date
             save_state(state)

@@ -5,5 +5,10 @@
   "last_action_date": null,
   "exit_count": 0,
   "entry_count": 0,
-  "current_entry": null
+  "current_entry": null,
+  "in_pre": false,
+  "pre_entry_day_idx": -1,
+  "pre_entry_price": 0.0,
+  "last_pre_trigger_idx": -10000,
+  "day_idx": 0
 }
