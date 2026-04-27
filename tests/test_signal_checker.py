@@ -212,7 +212,7 @@ class TestStateIO:
 
 class TestPREEntry:
     def test_triggers_when_all_conditions_met(self):
-        """Off + 편차≤-10% + VIX>40 + VIX drop≥5 + 쿨다운 경과 → PRE 발동."""
+        """Off + 편차≤-10% + VIX>35 + VIX drop≥5 + 쿨다운 경과 → PRE 발동."""
         indicators = make_indicators(close=430.0, sma200=480.0, vix=52.0, vix_drop=8.0)
         state = make_state("Off", day_idx=200, last_pre_trigger_idx=0)
         actions = check_signals(state, indicators)
@@ -229,12 +229,19 @@ class TestPREEntry:
         actions = check_signals(state, indicators)
         assert actions[0]["type"] == "EMERGENCY_EXIT"  # 긴급 탈출 발동
 
-    def test_does_not_trigger_vix_below_40(self):
-        """VIX < 40 → PRE 미발동."""
-        indicators = make_indicators(close=430.0, sma200=480.0, vix=35.0, vix_drop=8.0)
+    def test_does_not_trigger_vix_below_35(self):
+        """VIX ≤ 35 → PRE 미발동."""
+        indicators = make_indicators(close=430.0, sma200=480.0, vix=34.9, vix_drop=8.0)
         state = make_state("Off", day_idx=200, last_pre_trigger_idx=0)
         actions = check_signals(state, indicators)
         assert actions[0]["type"] == "DAILY_STATUS"
+
+    def test_triggers_at_vix_35_1(self):
+        """VIX > 35 (35.1) → PRE 발동."""
+        indicators = make_indicators(close=430.0, sma200=480.0, vix=35.1, vix_drop=8.0)
+        state = make_state("Off", day_idx=200, last_pre_trigger_idx=0)
+        actions = check_signals(state, indicators)
+        assert actions[0]["type"] == "PRE_ENTRY"
 
     def test_does_not_trigger_vix_drop_below_5(self):
         """VIX drop < 5 → PRE 미발동."""
@@ -357,7 +364,7 @@ class TestPREPriority:
 
     def test_pre_entry_beats_gce(self):
         """PRE Entry가 GCE보다 우선 (조건 동시 충족 시)."""
-        # 편차 ≤ -10% + VIX > 40 + drop ≥ 5 → PRE
+        # 편차 ≤ -10% + VIX > 35 + drop ≥ 5 → PRE
         # 이 조건에서 GCE 조건(편차 ≥ +1%)은 절대 동시 충족 불가
         # 대신 PRE Entry가 GCE보다 먼저 체크됨을 검증
         indicators = make_indicators(close=430.0, sma200=480.0, vix=52.0, vix_drop=8.0)

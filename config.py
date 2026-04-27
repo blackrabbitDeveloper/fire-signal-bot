@@ -1,11 +1,11 @@
-"""H 전략 시그널 봇 설정."""
+"""BRIS-v1 시그널 봇 설정."""
 
 # ── 임계치 (변경 금지 — Bootstrap 검증 완료) ──
 EMERGENCY_EXIT_THRESHOLD = -0.10   # 편차 ≤ -10% → 긴급 탈출
 GOLDEN_CROSS_ENTRY_THRESHOLD = 0.01  # 편차 ≥ +1% AND SMA50>SMA200 → GCE 진입
 
 # ── PRE (Panic Rebound Entry) 임계치 ──
-PRE_VIX_THRESHOLD = 40.0       # VIX > 40
+PRE_VIX_THRESHOLD = 35.0       # VIX > 35 (v3: 40 -> 35)
 PRE_VIX_DROP_THRESHOLD = 5.0   # VIX 5일 drop ≥ 5
 PRE_VIX_DROP_LOOKBACK = 5      # VIX drop 계산 룩백 (거래일)
 PRE_COOLDOWN = 60              # PRE 재발동 쿨다운 (거래일)

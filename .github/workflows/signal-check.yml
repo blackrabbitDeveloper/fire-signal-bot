@@ -1,4 +1,4 @@
-name: H Strategy Signal Check
+name: BRIS-v1 Signal Check
 
 on:
   schedule:

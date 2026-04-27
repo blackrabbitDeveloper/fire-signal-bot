@@ -1,4 +1,4 @@
-"""H 전략 시그널 백테스트 -가이드 10장 검증용.
+"""BRIS-v1 시그널 백테스트 -가이드 10장 검증용.
 
 과거 QQQ 데이터로 signal_checker 로직을 날짜별 시뮬레이션하여
 D3 긴급 탈출, GCE 진입, 월말 On/Off 발동 이력을 검증한다.
@@ -304,7 +304,7 @@ def print_results(events: list[dict], state: dict, perf: dict | None = None) -> 
     years = (state['end_date'] - state['start_date']).days / 365.25
 
     print(f"\n{'='*60}")
-    print(f"  H 전략 백테스트 결과 ({period})")
+    print(f"  BRIS-v1 백테스트 결과 ({period})")
     print(f"  기간: {years:.1f}년 / 거래일: {state['total_days']}일")
     print(f"{'='*60}\n")
 
@@ -786,7 +786,7 @@ def print_portfolio_results(result: dict) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="H 전략 시그널 백테스트")
+    parser = argparse.ArgumentParser(description="BRIS-v1 시그널 백테스트")
     parser.add_argument("--start", default="2012-01-01", help="백테스트 시작일 (기본: 2012-01-01)")
     parser.add_argument("--csv", default=None, help="결과 CSV 파일 경로")
     parser.add_argument("--trades", default=None, help="매매 로그 CSV 파일 경로")

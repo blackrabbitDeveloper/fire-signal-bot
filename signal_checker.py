@@ -1,4 +1,4 @@
-"""H 전략 시그널 체커 — F2D3 + 골든크로스 Entry."""
+"""BRIS-v1 시그널 체커 — F2D3 + GCE + PRE(VIX35)."""
 
 import json
 import os
@@ -178,7 +178,7 @@ def compute_indicators(close: pd.Series, vix_close: pd.Series | None = None) -> 
 # ── 시그널 판단 ──
 
 def check_signals(state: dict, indicators: dict, is_month_end: bool = False) -> list[dict]:
-    """V16a_c20 시그널 체크 — 액션 리스트 반환."""
+    """BRIS-v1 시그널 체크 — 액션 리스트 반환."""
     actions = []
     current = state["state"]
     in_pre = state.get("in_pre", False)
@@ -349,7 +349,7 @@ def main() -> None:
     check_date = today.strftime("%Y-%m-%d")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    print(f"=== H 전략 시그널 체크 ({now_str}) ===\n")
+    print(f"=== BRIS-v1 시그널 체크 ({now_str}) ===\n")
 
     # 1. 거래일 체크
     if not is_trading_day():

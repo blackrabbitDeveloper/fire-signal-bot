@@ -49,7 +49,7 @@ def build_emergency_exit_embed(indicators: dict, check_date: str) -> dict:
             {"name": "매수", "value": "DBMF (매도 대금)", "inline": True},
             {"name": "최종 포트폴리오", "value": PORTFOLIO_OFF, "inline": False},
         ],
-        "footer": {"text": f"H 전략 시그널 봇 • D3 긴급 탈출 • {check_date}"},
+        "footer": {"text": f"BRIS-v1 시그널 봇 • D3 긴급 탈출 • {check_date}"},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -73,7 +73,7 @@ def build_golden_cross_entry_embed(indicators: dict, check_date: str) -> dict:
             {"name": "매수", "value": "TQQQ + XLU (매도 대금)", "inline": True},
             {"name": "최종 포트폴리오", "value": PORTFOLIO_ON, "inline": False},
         ],
-        "footer": {"text": f"H 전략 시그널 봇 • GCE 진입 • {check_date}"},
+        "footer": {"text": f"BRIS-v1 시그널 봇 • GCE 진입 • {check_date}"},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -84,7 +84,7 @@ def build_pre_entry_embed(indicators: dict, check_date: str) -> dict:
         "title": "🚨🚨🚨 PRE Entry! 패닉 바닥 진입",
         "description": (
             f"편차 **{indicators['deviation_pct']:+.2f}%** ≤ -10% & "
-            f"VIX **{indicators['vix']:.1f}** > 40 & "
+            f"VIX **{indicators['vix']:.1f}** > 35 & "
             f"VIX drop **+{indicators['vix_drop']:.1f}**\n"
             "**다음 거래일 시가에 포트폴리오 조정 필요**\n"
             "20일간 월말 체크 비활성 / 진입가 하회 시 즉시 Exit"
@@ -101,7 +101,7 @@ def build_pre_entry_embed(indicators: dict, check_date: str) -> dict:
             {"name": "매수", "value": "TQQQ+XLU+GLD", "inline": True},
             {"name": "최종 포트폴리오", "value": PORTFOLIO_ON, "inline": False},
         ],
-        "footer": {"text": f"H 전략 시그널 봇 • PRE Entry • {check_date}"},
+        "footer": {"text": f"BRIS-v1 시그널 봇 • PRE Entry • {check_date}"},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -125,7 +125,7 @@ def build_pre_price_exit_embed(indicators: dict, state: dict, check_date: str) -
             {"name": "매수", "value": "DBMF (매도 대금)", "inline": True},
             {"name": "최종 포트폴리오", "value": PORTFOLIO_OFF, "inline": False},
         ],
-        "footer": {"text": f"H 전략 시그널 봇 • PRE 가격 Exit • {check_date}"},
+        "footer": {"text": f"BRIS-v1 시그널 봇 • PRE 가격 Exit • {check_date}"},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -155,7 +155,7 @@ def build_monthly_change_embed(
             {"name": "편차", "value": f"{indicators['deviation_pct']:+.2f}%", "inline": True},
             {"name": "액션", "value": action, "inline": False},
         ],
-        "footer": {"text": f"H 전략 시그널 봇 • 월말 정기 • {check_date}"},
+        "footer": {"text": f"BRIS-v1 시그널 봇 • 월말 정기 • {check_date}"},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -213,10 +213,10 @@ def build_daily_status_embed(
         })
 
     return {
-        "title": f"H 전략 V16a_c20 일일 리포트 ({check_date})",
+        "title": f"BRIS-v1 일일 리포트 ({check_date})",
         "color": COLOR_INFO,
         "fields": fields,
-        "footer": {"text": f"H 전략 시그널 봇 • Exit: {state.get('exit_count', 0)}회 / Entry: {state.get('entry_count', 0)}회"},
+        "footer": {"text": f"BRIS-v1 시그널 봇 • Exit: {state.get('exit_count', 0)}회 / Entry: {state.get('entry_count', 0)}회"},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -231,7 +231,7 @@ def build_error_embed(error_message: str) -> dict:
             {"name": "에러", "value": str(error_message)[:1024], "inline": False},
             {"name": "재시도", "value": "3회 시도 후 실패", "inline": True},
         ],
-        "footer": {"text": "H 전략 시그널 봇"},
+        "footer": {"text": "BRIS-v1 시그널 봇"},
     }
 
 
@@ -244,7 +244,7 @@ def send_notification(embed: dict) -> None:
 
     payload = {
         "embeds": [embed],
-        "username": "H 전략 시그널 봇",
+        "username": "BRIS-v1 시그널 봇",
         "avatar_url": "https://em-content.zobj.net/source/twitter/376/chart-increasing_1f4c8.png",
     }
     _post_webhook(webhook_url, payload)
