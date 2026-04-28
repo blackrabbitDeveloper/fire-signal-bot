@@ -1,6 +1,6 @@
 {
   "state": "On",
-  "last_check": "2026-04-27",
+  "last_check": "2026-04-28",
   "last_action": null,
   "last_action_date": null,
   "exit_count": 0,
@@ -10,5 +10,5 @@
   "pre_entry_day_idx": -1,
   "pre_entry_price": 0.0,
   "last_pre_trigger_idx": -10000,
-  "day_idx": 2
+  "day_idx": 3
 }
